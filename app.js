@@ -1004,6 +1004,19 @@ function exportBackup(){
   downloadFile(`watten-backup_${stamp()}.json`, JSON.stringify(payload,null,2), "application/json");
   toast("Backup exportiert");
 }
+async function shareBackup(){
+  const payload={ app:"watten-tracker", schema:BACKUP_SCHEMA, exportedAt:Date.now(), store };
+  const name=`watten-backup_${stamp()}.json`;
+  const file=new File([JSON.stringify(payload,null,2)], name, {type:"application/json"});
+  try{
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:"Watten-Backup"});
+      return;
+    }
+  }catch(e){ if(e && e.name==="AbortError") return; }
+  // Fallback: kein Datei-Teilen möglich (z.B. Desktop-Browser) → normaler Download
+  exportBackup();
+}
 function parseBackup(raw){
   const data=JSON.parse(raw);
   const sessions = (data && data.store && Array.isArray(data.store.sessions)) ? data.store.sessions
@@ -1120,7 +1133,8 @@ function openDataSheet(){
         <div class="stat-block"><span class="sv">${rounds}</span><span class="ss">${rounds===1?'Runde':'Runden'} gesamt</span></div>
       </div>
     </div>
-    <button class="dice-btn" id="d-export" style="margin-top:0">${IC.download}Backup exportieren (JSON)</button>
+    <button class="dice-btn" id="d-share" style="margin-top:0">${IC.share}Backup an Mitspieler teilen</button>
+    <button class="dice-btn" id="d-export" style="background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.download}Backup exportieren (JSON)</button>
     <button class="dice-btn" id="d-csv" style="background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.table}Alle Runden als CSV</button>
     <div style="height:14px"></div>
     <p class="field-lbl">Backup importieren</p>
@@ -1148,6 +1162,7 @@ function openDataSheet(){
   const fileInput=$('#d-file',el);
   fileInput.onchange=(e)=>{ const f=e.target.files&&e.target.files[0]; if(f){ importBackup(f,pendingMode); close(); } e.target.value=""; };
   $('#d-done',el).onclick=close;
+  $('#d-share',el).onclick=shareBackup;
   $('#d-export',el).onclick=exportBackup;
   $('#d-csv',el).onclick=exportAllCSV;
   $('#d-merge',el).onclick=()=>{ pendingMode="merge"; fileInput.click(); };
