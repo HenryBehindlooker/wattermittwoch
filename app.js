@@ -76,10 +76,10 @@ const clone = (o) => (typeof structuredClone==='function' ? structuredClone(o) :
 const $ = (sel,root=document) => root.querySelector(sel);
 
 const fmt = {
-  dateMedium:(ms)=>new Intl.DateTimeFormat('de-AT',{day:'numeric',month:'long',year:'numeric'}).format(new Date(ms)),
-  dateShort: (ms)=>new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'2-digit'}).format(new Date(ms)),
-  timeShort: (ms)=>new Intl.DateTimeFormat('de-AT',{hour:'2-digit',minute:'2-digit'}).format(new Date(ms)),
-  timeMedium:(ms)=>new Intl.DateTimeFormat('de-AT',{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date(ms)),
+  dateMedium:(ms)=>new Intl.DateTimeFormat('de',{day:'numeric',month:'long',year:'numeric'}).format(new Date(ms)),
+  dateShort: (ms)=>new Intl.DateTimeFormat('de',{day:'2-digit',month:'2-digit',year:'2-digit'}).format(new Date(ms)),
+  timeShort: (ms)=>new Intl.DateTimeFormat('de',{hour:'2-digit',minute:'2-digit'}).format(new Date(ms)),
+  timeMedium:(ms)=>new Intl.DateTimeFormat('de',{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date(ms)),
 };
 const roundWord = (n) => n===1 ? "Runde" : "Runden";
 const roundLabel = (n) => n===1 ? "1 Runde" : `${n} Runden`;
