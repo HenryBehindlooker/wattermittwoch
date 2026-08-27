@@ -47,6 +47,7 @@ const IC = {
   upload:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m0 0L8 7m4-4l4 4"/><path d="M5 21h14"/></svg>',
   table:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>',
   shield:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></svg>',
+  cloud:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-1-7.9A5 5 0 0 1 15.9 8 4.5 4.5 0 0 1 17 18H7z"/></svg>',
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -343,7 +344,7 @@ let store = loadStore();
 let view = { screen:"home", sessionId:null, statsTab:0 };
 
 function currentSession(){ return store.sessions.find(x=>x.id===view.sessionId); }
-function commit(){ saveStore(); renderScreen(); }
+function commit(){ saveStore(); renderScreen(); scheduleSync(); }
 
 // ─────────────────────────────────────────────────────────────
 // Rendering: screens
@@ -1047,6 +1048,64 @@ function exportAllCSV(){
   toast("CSV exportiert");
 }
 
+// ── Home-Lab Sync (optional) ──
+// Push-only Backup nach jeder Änderung an einen selbst gehosteten Endpunkt
+// (z.B. DuckDNS+Caddy+watten-sync-server, siehe README). URL/Token liegen
+// getrennt vom Spielstand in localStorage, nicht Teil des store-Backups.
+const SYNC_KEY = "watten_sync_cfg";
+function loadSyncCfg(){
+  try{ const c=JSON.parse(localStorage.getItem(SYNC_KEY)); return c&&typeof c==="object" ? c : {url:"",token:"",lastSync:null}; }
+  catch(e){ return {url:"",token:"",lastSync:null}; }
+}
+function saveSyncCfg(){ try{ localStorage.setItem(SYNC_KEY, JSON.stringify(syncCfg)); }catch(e){} }
+let syncCfg = loadSyncCfg();
+const syncConfigured = ()=> !!(syncCfg.url && syncCfg.token);
+function syncEndpoint(path){ return syncCfg.url.replace(/\/+$/,"") + path; }
+
+let syncTimer=null, syncBusy=false;
+function scheduleSync(){
+  if(!syncConfigured()) return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(syncPush, 2500);
+}
+async function syncPush(silent){
+  if(!syncConfigured() || syncBusy) return;
+  syncBusy=true;
+  const payload={ app:"watten-tracker", schema:BACKUP_SCHEMA, exportedAt:Date.now(), store };
+  try{
+    const res=await fetch(syncEndpoint("/backup"),{
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+syncCfg.token },
+      body: JSON.stringify(payload)
+    });
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    syncCfg.lastSync=Date.now(); saveSyncCfg();
+    renderSyncStatus();
+    if(!silent) toast("Mit Home-Lab synchronisiert");
+  }catch(e){
+    renderSyncStatus(e.message);
+    if(!silent) toast("Sync fehlgeschlagen: "+e.message);
+  }finally{ syncBusy=false; }
+}
+async function syncPull(){
+  if(!syncConfigured()) return toast("Sync nicht konfiguriert");
+  try{
+    const res=await fetch(syncEndpoint("/backup"),{ headers:{ "Authorization":"Bearer "+syncCfg.token } });
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const incoming=parseBackup(await res.text());
+    const byId={}; store.sessions.forEach(s=>byId[s.id]=s); incoming.forEach(s=>byId[s.id]=s); store.sessions=Object.values(byId);
+    saveStore(); renderHome();
+    toast(`${incoming.length} Spiel(e) vom Home-Lab geladen`);
+  }catch(e){ toast("Laden fehlgeschlagen: "+e.message); }
+}
+function renderSyncStatus(err){
+  const el=document.getElementById("sync-status");
+  if(!el) return;
+  if(err){ el.textContent="⚠ Sync fehlgeschlagen: "+err; el.style.color="var(--danger)"; }
+  else if(syncCfg.lastSync){ el.textContent="Zuletzt gesynct: "+fmt.timeShort(syncCfg.lastSync); el.style.color="var(--streak)"; }
+  else{ el.textContent="Noch nicht synchronisiert"; el.style.color="var(--muted)"; }
+}
+
 function openDataSheet(){
   const games=store.sessions.length;
   const rounds=store.sessions.reduce((a,s)=>a+s.matchdays.reduce((x,m)=>x+m.rounds.length,0),0);
@@ -1068,7 +1127,22 @@ function openDataSheet(){
     <button class="dice-btn" id="d-merge" style="background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.upload}Zusammenführen (empfohlen)</button>
     <button class="dice-btn" id="d-replace" style="background:var(--surface);color:var(--danger);border:1px solid rgba(196,75,75,.4)">${IC.upload}Alles ersetzen</button>
     <input type="file" id="d-file" accept="application/json,.json" style="display:none">
-    <p class="hint">Zusammenführen fügt Spiele hinzu bzw. aktualisiert gleiche; Ersetzen überschreibt alles auf diesem Gerät.</p>`;
+    <p class="hint">Zusammenführen fügt Spiele hinzu bzw. aktualisiert gleiche; Ersetzen überschreibt alles auf diesem Gerät.</p>
+    <div style="height:22px"></div>
+    <p class="field-lbl">${IC.cloud} Home-Lab Sync (optional)</p>
+    <div class="section">
+      <input class="txtfield" id="sy-url" placeholder="https://dein-name.duckdns.org" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(syncCfg.url)}">
+    </div>
+    <div class="section">
+      <input class="txtfield" id="sy-token" type="password" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(syncCfg.token)}">
+    </div>
+    <button class="dice-btn" id="sy-save" style="margin-top:0">${IC.check}Sync-Zugang speichern</button>
+    <div style="display:flex;gap:10px;margin-top:10px">
+      <button class="dice-btn" id="sy-push" style="flex:1;background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.upload}Jetzt sichern</button>
+      <button class="dice-btn" id="sy-pull" style="flex:1;background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.download}Von Server laden</button>
+    </div>
+    <p class="hint" id="sync-status">${syncCfg.lastSync?"Zuletzt gesynct: "+fmt.timeShort(syncCfg.lastSync):"Noch nicht synchronisiert"}</p>
+    <p class="hint">URL und Token bleiben nur in diesem Browser gespeichert, nie im App-Code. Nach jeder Änderung wird automatisch ein Backup an deinen eigenen Server geschickt.</p>`;
   const {el,close}=sheetShell({ title:"Daten & Backup", trail:`<button id="d-done">Fertig</button>`, body });
   let pendingMode="merge";
   const fileInput=$('#d-file',el);
@@ -1080,6 +1154,23 @@ function openDataSheet(){
   $('#d-replace',el).onclick=()=>{
     alertDialog({title:"Alles ersetzen?", message:"Alle Spiele auf diesem Gerät werden durch das Backup ersetzt.",
       confirmLabel:"Datei wählen", destructive:true, onConfirm:()=>{ pendingMode="replace"; fileInput.click(); }});
+  };
+  $('#sy-save',el).onclick=()=>{
+    syncCfg.url=$('#sy-url',el).value.trim();
+    syncCfg.token=$('#sy-token',el).value.trim();
+    saveSyncCfg();
+    toast(syncConfigured() ? "Sync-Zugang gespeichert" : "Sync-Zugang entfernt");
+  };
+  $('#sy-push',el).onclick=()=>{
+    syncCfg.url=$('#sy-url',el).value.trim(); syncCfg.token=$('#sy-token',el).value.trim(); saveSyncCfg();
+    if(!syncConfigured()) return toast("Bitte URL und Token eintragen");
+    syncPush(false);
+  };
+  $('#sy-pull',el).onclick=()=>{
+    syncCfg.url=$('#sy-url',el).value.trim(); syncCfg.token=$('#sy-token',el).value.trim(); saveSyncCfg();
+    if(!syncConfigured()) return toast("Bitte URL und Token eintragen");
+    alertDialog({title:"Vom Server laden?", message:"Spiele vom Home-Lab werden mit denen auf diesem Gerät zusammengeführt.",
+      confirmLabel:"Laden", onConfirm:syncPull});
   };
 }
 
