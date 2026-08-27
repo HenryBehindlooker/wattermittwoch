@@ -1,0 +1,11 @@
+services:
+  watten:
+    build: .
+    # Alternativ ohne Build, direkt aus dem Verzeichnis:
+    # image: nginx:1.27-alpine
+    # volumes:
+    #   - ./:/usr/share/nginx/html:ro
+    ports:
+      - "8088:80"        # http://localhost:8088  → nach Belieben anpassen
+    restart: unless-stopped
+    container_name: watten
