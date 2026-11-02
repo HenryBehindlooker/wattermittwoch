@@ -93,6 +93,7 @@ input{font-family:inherit;}
 .ctx-del{position:absolute; top:8px; right:8px; width:30px; height:30px; border-radius:8px;
   display:grid; place-items:center; color:var(--danger); background:rgba(0,0,0,.25); opacity:0; transition:opacity .15s;}
 .sess-card:hover .ctx-del{opacity:1;}
+@media (hover:none){ .ctx-del{display:none;} } /* Touch: unsichtbarer Button würde sonst Tipps auf die Ecke abfangen */
 
 /* ── Empty state ─────────────────────────────────────── */
 .empty{display:flex; flex-direction:column; align-items:center; gap:18px; text-align:center;
@@ -131,7 +132,7 @@ input{font-family:inherit;}
 .progress > span{display:block; height:100%; border-radius:3px;}
 .score-col.a .progress > span{background:var(--teamA);} .score-col.b .progress > span{background:var(--teamB);}
 .score-col .tgt{font-size:10px; color:var(--muted);}
-.rdots{display:flex; gap:4px; margin-top:2px;}
+.rdots{display:flex; flex-wrap:wrap; justify-content:center; gap:4px; margin-top:2px; max-width:100%;}
 .rdots i{width:9px; height:9px; border-radius:50%; background:var(--border); display:block;}
 .score-col.a .rdots i.on{background:var(--teamA);} .score-col.b .rdots i.on{background:var(--teamB);}
 .rwon{font-size:11px; color:var(--muted);}

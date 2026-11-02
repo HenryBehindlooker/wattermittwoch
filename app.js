@@ -104,9 +104,22 @@ function newRound(){
   return {id:uuid(), teamAPoints:0, teamBPoints:0, hands:[], winnerTeam:null,
           startedAt:Date.now(), endedAt:null, isDeleted:false, deletedAt:null};
 }
-function newMatchday(rotationIndex){
+function defaultTeams(rotationIndex){
+  switch(((rotationIndex%3)+3)%3){
+    case 0:  return {teamA:[0,1], teamB:[2,3]};
+    case 1:  return {teamA:[0,2], teamB:[1,3]};
+    default: return {teamA:[0,3], teamB:[1,2]};
+  }
+}
+// Teamaufstellung eines Spieltags: {teamA:[i,i], teamB:[i,i], nameA, nameB}
+function makeTeams(teamA, teamB, nameA, nameB){
+  return {teamA:teamA.slice(), teamB:teamB.slice(), nameA:nameA||null, nameB:nameB||null};
+}
+function newMatchday(rotationIndex, teams){
+  const d=defaultTeams(rotationIndex);
   return {id:uuid(), rotationIndex, date:Date.now(), rounds:[newRound()],
-          teamARoundsWon:0, teamBRoundsWon:0, isDeleted:false, deletedAt:null};
+          teamARoundsWon:0, teamBRoundsWon:0, isDeleted:false, deletedAt:null,
+          teams: teams || makeTeams(d.teamA, d.teamB)};
 }
 function newSession(name, variantKey, quickMode){
   const v = VARIANTS[variantKey] || VARIANTS.ladinisch;
@@ -116,16 +129,105 @@ function newSession(name, variantKey, quickMode){
     matchdays:[newMatchday(0)], currentMatchdayIndex:0,
     tricksA:0, tricksB:0, currentBid:2,
     customTeamA:null, customTeamB:null, customTeamNameA:null, customTeamNameB:null,
-    undoStack:[], createdAt:Date.now(),
+    undoStack:[], createdAt:Date.now(), updatedAt:Date.now(),
   };
 }
 
-function defaultTeams(rotationIndex){
-  switch(((rotationIndex%3)+3)%3){
-    case 0:  return {teamA:[0,1], teamB:[2,3]};
-    case 1:  return {teamA:[0,2], teamB:[1,3]};
-    default: return {teamA:[0,3], teamB:[1,2]};
+const isTeamIdx = (t)=> Array.isArray(t) && t.length===2 && t.every(i=>Number.isInteger(i) && i>=0 && i<4);
+const roundWorth = (r)=> r.schneider ? 2 : 1;
+
+// Bringt geladene/importierte Daten auf den aktuellen Stand und repariert
+// Inkonsistenzen aus älteren Versionen. Gibt null zurück, wenn unbrauchbar.
+function normalizeSession(s){
+  if(!s || typeof s!=="object" || !s.id || !Array.isArray(s.matchdays)) return null;
+  // Änderungszeitpunkt festhalten, bevor unten repariert wird (sonst wirken alte Backups "neu")
+  if(!Number.isFinite(s.updatedAt)) s.updatedAt=sessionUpdatedAt(s);
+  if(!VARIANTS[s.variant]) s.variant="ladinisch";
+  if(!(Number.isFinite(s.targetPoints) && s.targetPoints>=1)) s.targetPoints=VARIANTS[s.variant].defaultTarget;
+  if(typeof s.name!=="string" || !s.name.trim()) s.name="Spiel";
+  if(!Array.isArray(s.players)) s.players=[];
+  s.players=s.players.filter(p=>p&&typeof p==="object").slice(0,4);
+  s.players.forEach((p,i)=>{ if(!p.id) p.id=uuid(); if(typeof p.name!=="string"||!p.name.trim()) p.name=`Spieler ${i+1}`; });
+  while(s.players.length<4) s.players.push(newPlayer(`Spieler ${s.players.length+1}`));
+  s.quickMode=!!s.quickMode;
+  if(!Number.isInteger(s.tricksA) || s.tricksA<0) s.tricksA=0;
+  if(!Number.isInteger(s.tricksB) || s.tricksB<0) s.tricksB=0;
+  if(!Number.isInteger(s.currentBid) || s.currentBid<2) s.currentBid=2;
+  if(!Array.isArray(s.undoStack)) s.undoStack=[];
+  if(!(isTeamIdx(s.customTeamA) && isTeamIdx(s.customTeamB))){ s.customTeamA=null; s.customTeamB=null; }
+  s.customTeamNameA=s.customTeamNameA||null; s.customTeamNameB=s.customTeamNameB||null;
+  if(!s.createdAt) s.createdAt=Date.now();
+
+  s.matchdays=s.matchdays.filter(m=>m&&typeof m==="object");
+  if(!s.matchdays.length) s.matchdays.push(newMatchday(0));
+  s.matchdays.forEach(md=>{
+    if(!md.id) md.id=uuid();
+    if(!Number.isInteger(md.rotationIndex)) md.rotationIndex=0;
+    if(!md.date) md.date=s.createdAt;
+    md.isDeleted=!!md.isDeleted;
+    if(!Array.isArray(md.rounds)) md.rounds=[];
+    md.rounds=md.rounds.filter(r=>r&&typeof r==="object");
+    md.rounds.forEach(r=>{
+      if(!r.id) r.id=uuid();
+      r.teamAPoints=+r.teamAPoints||0; r.teamBPoints=+r.teamBPoints||0;
+      if(!Array.isArray(r.hands)) r.hands=[];
+      if(r.winnerTeam!==0 && r.winnerTeam!==1) r.winnerTeam=null;
+      r.isDeleted=!!r.isDeleted;
+      if(!r.startedAt) r.startedAt=md.date;
+    });
+    // Ältere Versionen kannten keine Teams pro Spieltag → so einfrieren, wie sie bisher angezeigt wurden
+    if(!(md.teams && isTeamIdx(md.teams.teamA) && isTeamIdx(md.teams.teamB))){
+      md.teams = (s.customTeamA && s.customTeamB)
+        ? makeTeams(s.customTeamA, s.customTeamB, s.customTeamNameA, s.customTeamNameB)
+        : (d=>makeTeams(d.teamA,d.teamB))(defaultTeams(md.rotationIndex));
+    }
+    // Rundenzähler immer aus den Runden ableiten (repariert alte Inkonsistenzen)
+    md.teamARoundsWon=0; md.teamBRoundsWon=0;
+    md.rounds.forEach(r=>{
+      if(r.isDeleted || r.winnerTeam===null) return;
+      if(r.winnerTeam===0) md.teamARoundsWon+=roundWorth(r); else md.teamBRoundsWon+=roundWorth(r);
+    });
+  });
+  if(!(Number.isInteger(s.currentMatchdayIndex) && s.currentMatchdayIndex>=0 && s.currentMatchdayIndex<s.matchdays.length))
+    s.currentMatchdayIndex=s.matchdays.length-1;
+  // Es wird nie in einen gelöschten Spieltag / eine gelöschte oder beendete Runde weitergezählt
+  let cur=s.matchdays[s.currentMatchdayIndex];
+  if(cur.isDeleted){
+    s.matchdays.push(newMatchday(cur.rotationIndex, makeTeams(cur.teams.teamA,cur.teams.teamB,cur.teams.nameA,cur.teams.nameB)));
+    s.currentMatchdayIndex=s.matchdays.length-1; cur=s.matchdays[s.currentMatchdayIndex];
   }
+  const last=cur.rounds[cur.rounds.length-1];
+  if(!last || last.isDeleted || last.winnerTeam!==null || last.closed){
+    cur.rounds.push(newRound()); s.tricksA=0; s.tricksB=0; s.currentBid=2;
+  }
+  return s;
+}
+
+// Zeitpunkt der letzten Änderung – für das Zusammenführen von Backups
+function sessionUpdatedAt(s){
+  if(Number.isFinite(s.updatedAt)) return s.updatedAt;
+  let t=s.createdAt||0;
+  for(const md of s.matchdays||[]){
+    t=Math.max(t, md.date||0, md.deletedAt||0);
+    for(const r of md.rounds||[]){
+      t=Math.max(t, r.startedAt||0, r.endedAt||0, r.deletedAt||0);
+      for(const h of r.hands||[]) t=Math.max(t, h.timestamp||0);
+    }
+  }
+  for(const u of s.undoStack||[]) t=Math.max(t, u.timestamp||0);
+  return t;
+}
+// Führt Sessions zusammen; bei gleicher ID gewinnt der neuere Stand
+function mergeSessions(local, incoming){
+  const byId=new Map(local.map(s=>[s.id,s]));
+  const res={added:0, updated:0, kept:0};
+  for(const s of incoming){
+    const ex=byId.get(s.id);
+    if(!ex){ byId.set(s.id,s); res.added++; }
+    else if(sessionUpdatedAt(s) > sessionUpdatedAt(ex)){ byId.set(s.id,s); res.updated++; }
+    else res.kept++;
+  }
+  return {sessions:[...byId.values()], ...res};
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -138,18 +240,30 @@ function loadStore(){
     if(!raw) return {sessions:[]};
     const s = JSON.parse(raw);
     if(!s || !Array.isArray(s.sessions)) return {sessions:[]};
+    s.sessions = s.sessions.map(normalizeSession).filter(Boolean);
     return s;
   }catch(e){ return {sessions:[]}; }
 }
 function saveStore(){
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
-  catch(e){ console.warn("Speichern fehlgeschlagen", e); }
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); return true; }
+  catch(e){
+    // Speicher voll → Undo-Verläufe kürzen (die sind verzichtbar) und nochmal versuchen
+    store.sessions.forEach(s=>{ if(s.undoStack.length>5) s.undoStack.splice(0, s.undoStack.length-5); });
+    try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); return true; }
+    catch(e2){
+      console.warn("Speichern fehlgeschlagen", e2);
+      toast("⚠ Speichern fehlgeschlagen – bitte Backup exportieren!");
+      return false;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
-// Game logic (Port von GameViewModel) – arbeitet direkt auf einer Session
+// Game logic – arbeitet direkt auf einer Session
 // ─────────────────────────────────────────────────────────────
+const UNDO_MAX = 30;
 const Game = {
+  lastRoundEvent: null,
   currentMatchday: (s)=> s.matchdays[s.currentMatchdayIndex],
   currentRound:    (s)=> { const md=Game.currentMatchday(s); return md.rounds[md.rounds.length-1]; },
   isRoundOver:     (s)=> Game.currentRound(s).winnerTeam !== null,
@@ -159,31 +273,30 @@ const Game = {
   undoHistory:     (s)=> s.undoStack.slice().reverse(),
   matchdayNumber:  (s)=> s.currentMatchdayIndex+1,
 
-  teams:(s)=>{
-    if(s.customTeamA && s.customTeamB) return {teamA:s.customTeamA, teamB:s.customTeamB};
-    return defaultTeams(Game.currentMatchday(s).rotationIndex);
+  teams:(s)=> Game.currentMatchday(s).teams,
+  // Name eines Teams (0 = A, 1 = B) an einem bestimmten Spieltag
+  teamNameOf:(s,md,side)=>{
+    const t=md.teams; const custom = side===0 ? t.nameA : t.nameB;
+    if(custom) return custom;
+    return (side===0?t.teamA:t.teamB).map(i=>s.players[i].name).join(" & ");
   },
-  teamAName:(s)=>{
-    if(s.customTeamNameA) return s.customTeamNameA;
-    return Game.teams(s).teamA.map(i=>s.players[i].name).join(" & ");
-  },
-  teamBName:(s)=>{
-    if(s.customTeamNameB) return s.customTeamNameB;
-    return Game.teams(s).teamB.map(i=>s.players[i].name).join(" & ");
-  },
+  teamAName:(s)=> Game.teamNameOf(s,Game.currentMatchday(s),0),
+  teamBName:(s)=> Game.teamNameOf(s,Game.currentMatchday(s),1),
   matchdayDate:(s)=> fmt.dateMedium(Game.currentMatchday(s).date),
 
   totalRoundsA:(s)=> s.matchdays.filter(m=>!m.isDeleted).reduce((a,m)=>a+m.teamARoundsWon,0),
   totalRoundsB:(s)=> s.matchdays.filter(m=>!m.isDeleted).reduce((a,m)=>a+m.teamBRoundsWon,0),
 
+  // Pro Runde mit der Aufstellung, die beim Rundenende galt
   playerStats:(s)=>{
     const wins = {}; s.players.forEach(p=>wins[p.id]=0);
     for(const md of s.matchdays){
       if(md.isDeleted) continue;
-      const comp = s.customTeamA ? {teamA:s.customTeamA, teamB:s.customTeamB}
-                                 : defaultTeams(md.rotationIndex);
-      comp.teamA.forEach(i=>wins[s.players[i].id]+=md.teamARoundsWon);
-      comp.teamB.forEach(i=>wins[s.players[i].id]+=md.teamBRoundsWon);
+      for(const r of md.rounds){
+        if(r.isDeleted || r.winnerTeam===null) continue;
+        const comp = r.teams || md.teams;
+        (r.winnerTeam===0?comp.teamA:comp.teamB).forEach(i=>wins[s.players[i].id]+=roundWorth(r));
+      }
     }
     return s.players.map(p=>({player:p, roundsWon:wins[p.id]||0}));
   },
@@ -212,18 +325,45 @@ const Game = {
     const sumB=active.reduce((a,m)=>a+m.rounds.filter(r=>!r.isDeleted).reduce((x,r)=>x+r.teamBPoints,0),0);
     return {a:sumA/active.length, b:sumB/active.length};
   },
+  roundWorth,
+  isGestrichen:(s,pts)=> pts < s.targetPoints && s.targetPoints-pts <= GESTRICHEN_DIFF,
 
-  // ── mutating actions ──
-  snapshot:(s,action)=>{
+  // ── Undo ──
+  // Gesichert werden nur die betroffenen Spieltage (nicht alle), damit der
+  // Undo-Verlauf bei langen Sessions den Browser-Speicher nicht sprengt.
+  snapshot:(s,action,extraIdx=[])=>{
+    const mds={};
+    new Set([s.currentMatchdayIndex, ...extraIdx]).forEach(i=>{ if(s.matchdays[i]) mds[i]=clone(s.matchdays[i]); });
     s.undoStack.push({
-      matchdays:clone(s.matchdays), currentMatchdayIndex:s.currentMatchdayIndex,
+      mdCount:s.matchdays.length, mds, currentMatchdayIndex:s.currentMatchdayIndex,
       tricksA:s.tricksA, tricksB:s.tricksB, currentBid:s.currentBid,
-      customTeamA:s.customTeamA?clone(s.customTeamA):null, customTeamB:s.customTeamB?clone(s.customTeamB):null,
+      customTeamA:s.customTeamA?s.customTeamA.slice():null, customTeamB:s.customTeamB?s.customTeamB.slice():null,
       customTeamNameA:s.customTeamNameA, customTeamNameB:s.customTeamNameB,
+      name:s.name, variant:s.variant, targetPoints:s.targetPoints, quickMode:s.quickMode, players:clone(s.players),
       action, timestamp:Date.now(),
     });
-    if(s.undoStack.length>30) s.undoStack.shift();
+    if(s.undoStack.length>UNDO_MAX) s.undoStack.splice(0, s.undoStack.length-UNDO_MAX);
   },
+  undo:(s)=>{
+    const snap=s.undoStack.pop(); if(!snap) return;
+    if(snap.matchdays) s.matchdays=snap.matchdays;          // altes Format (komplette Kopie)
+    else{
+      s.matchdays.length=Math.min(s.matchdays.length, snap.mdCount);
+      for(const k in snap.mds) s.matchdays[+k]=snap.mds[k];
+    }
+    s.currentMatchdayIndex=snap.currentMatchdayIndex;
+    s.tricksA=snap.tricksA; s.tricksB=snap.tricksB; s.currentBid=snap.currentBid;
+    s.customTeamA=snap.customTeamA; s.customTeamB=snap.customTeamB;
+    s.customTeamNameA=snap.customTeamNameA; s.customTeamNameB=snap.customTeamNameB;
+    if(snap.variant!==undefined){
+      s.name=snap.name; s.variant=snap.variant; s.targetPoints=snap.targetPoints; s.quickMode=snap.quickMode;
+    }
+    if(snap.players) s.players=snap.players;
+    normalizeSession(s);
+    Haptics.warning();
+  },
+
+  // ── Spielablauf ──
   resetHand:(s)=>{ s.tricksA=0; s.tricksB=0; s.currentBid=2; },
   startNewRound:(s)=>{ Game.currentMatchday(s).rounds.push(newRound()); Game.resetHand(s); },
 
@@ -232,9 +372,6 @@ const Game = {
     Game.snapshot(s,"addTrick");
     if(team===0) s.tricksA++; else s.tricksB++;
     Haptics.light();
-    Game._checkHand(s);
-  },
-  _checkHand:(s)=>{
     if(s.tricksA>=TRICKS_TO_WIN) Game._award(s,0);
     else if(s.tricksB>=TRICKS_TO_WIN) Game._award(s,1);
   },
@@ -250,93 +387,121 @@ const Game = {
     Game.snapshot(s,"fold"); Haptics.medium();
     Game._award(s, team===0?1:0, s.currentBid-1, team);
   },
-  // Gibt das Ergebnis der beendeten Runde zurück (oder null), damit die UI reagieren kann
   _award:(s,team,points,foldedBy)=>{
     const pts = points!=null ? points : s.currentBid;
-    const md=Game.currentMatchday(s); const r=md.rounds[md.rounds.length-1];
+    const r=Game.currentRound(s);
     const hand={id:uuid(), winnerTeam:team, pointsAwarded:pts, timestamp:Date.now()};
     if(foldedBy!=null) hand.foldedBy=foldedBy;
     r.hands.push(hand);
     if(team===0) r.teamAPoints+=pts; else r.teamBPoints+=pts;
     Game.resetHand(s);
-    if(r.teamAPoints>=s.targetPoints || r.teamBPoints>=s.targetPoints){
-      const w = r.teamAPoints>=s.targetPoints ? 0 : 1;
-      const loserPts = w===0 ? r.teamBPoints : r.teamAPoints;
-      r.winnerTeam=w; r.endedAt=Date.now();
-      r.schneider = loserPts===0;           // Gschneidert → zählt 2 Buammaln
-      const worth = Game.roundWorth(r);
-      if(w===0) md.teamARoundsWon+=worth; else md.teamBRoundsWon+=worth;
-      Haptics.success();
-      Game.startNewRound(s);
-      Game.lastRoundEvent={winner:w, schneider:r.schneider};
-    }
+    Game._checkRoundEnd(s, team);
   },
-  roundWorth:(r)=> r.schneider ? 2 : 1,
-  isGestrichen:(s,pts)=> pts < s.targetPoints && s.targetPoints-pts <= GESTRICHEN_DIFF,
+  // Beendet die Runde, wenn ein Team das Ziel erreicht hat
+  _checkRoundEnd:(s,lastScorer)=>{
+    const r=Game.currentRound(s), tgt=s.targetPoints;
+    const aDone=r.teamAPoints>=tgt, bDone=r.teamBPoints>=tgt;
+    if(!aDone && !bDone) return;
+    let w;
+    if(aDone && bDone) w = lastScorer!=null ? lastScorer : (r.teamAPoints>=r.teamBPoints?0:1); // nur nach Ziel-Senkung möglich
+    else w = aDone ? 0 : 1;
+    Game._finishRound(s, w, true);
+  },
+  _finishRound:(s,w,natural)=>{
+    const md=Game.currentMatchday(s), r=Game.currentRound(s);
+    r.winnerTeam=w;
+    r.teams={teamA:md.teams.teamA.slice(), teamB:md.teams.teamB.slice()};
+    if(natural){
+      r.endedAt=Date.now();
+      r.schneider = (w===0 ? r.teamBPoints : r.teamAPoints)===0;   // Gschneidert → zählt 2 Buammaln
+    }
+    // Manuell beendete Runden: endedAt bleibt null → zählen nicht in die Ø-Rundendauer
+    if(w===0) md.teamARoundsWon+=roundWorth(r); else md.teamBRoundsWon+=roundWorth(r);
+    Haptics.success();
+    Game.lastRoundEvent={winner:w, schneider:!!r.schneider};
+    Game.startNewRound(s);
+  },
   increaseBid:(s)=>{
     if(Game.isRoundOver(s)) return;
     Game.snapshot(s,"increaseBid"); s.currentBid++; Haptics.medium();
   },
-  undo:(s)=>{
-    const snap=s.undoStack.pop(); if(!snap) return;
-    s.matchdays=snap.matchdays; s.currentMatchdayIndex=snap.currentMatchdayIndex;
-    s.tricksA=snap.tricksA; s.tricksB=snap.tricksB; s.currentBid=snap.currentBid;
-    s.customTeamA=snap.customTeamA; s.customTeamB=snap.customTeamB;
-    s.customTeamNameA=snap.customTeamNameA; s.customTeamNameB=snap.customTeamNameB;
-    Haptics.warning();
-  },
+  canEndRound:(s)=>{ const r=Game.currentRound(s); return r.teamAPoints>0 || r.teamBPoints>0; },
+  // Runde vorzeitig beenden: wer führt, gewinnt; bei Gleichstand ohne Sieger
   nextRound:(s)=>{
-    const r=Game.currentRound(s);
-    if(!(Game.isRoundOver(s) || r.teamAPoints>0 || r.teamBPoints>0)) return;
+    if(!Game.canEndRound(s)) return;
     Game.snapshot(s,"nextRound");
-    if(!Game.isRoundOver(s)){
-      const md=Game.currentMatchday(s); const rr=md.rounds[md.rounds.length-1];
-      if(rr.teamAPoints>=rr.teamBPoints){ rr.winnerTeam=0; md.teamARoundsWon++; }
-      else { rr.winnerTeam=1; md.teamBRoundsWon++; }
-      // Hinweis: endedAt bleibt bewusst null (wie im Swift-Original) – ein
-      // manuell beendetes Spiel zählt nicht in die Ø-Rundendauer.
-    }
-    Game.startNewRound(s);
+    const r=Game.currentRound(s);
+    if(r.teamAPoints===r.teamBPoints){ r.closed=true; Game.startNewRound(s); }
+    else Game._finishRound(s, r.teamAPoints>r.teamBPoints?0:1, false);
+  },
+  _pushMatchday:(s,rotationIndex)=>{
+    const d=defaultTeams(rotationIndex);
+    const teams = (s.customTeamA && s.customTeamB)
+      ? makeTeams(s.customTeamA, s.customTeamB, s.customTeamNameA, s.customTeamNameB)
+      : makeTeams(d.teamA, d.teamB);
+    s.matchdays.push(newMatchday(rotationIndex, teams));
+    s.currentMatchdayIndex=s.matchdays.length-1;
+    Game.resetHand(s);
   },
   nextMatchday:(s)=>{
     Game.snapshot(s,"nextMatchday");
-    s.matchdays.push(newMatchday(Game.currentMatchday(s).rotationIndex+1));
-    s.currentMatchdayIndex=s.matchdays.length-1;
-    Game.resetHand(s); Haptics.heavy();
+    const md=Game.currentMatchday(s);
+    // leere, nie gespielte Runde am Ende nicht mitschleppen
+    const last=md.rounds[md.rounds.length-1];
+    if(last && !last.hands.length && last.winnerTeam===null && !last.teamAPoints && !last.teamBPoints) md.rounds.pop();
+    Game._pushMatchday(s, md.rotationIndex+1);
+    Haptics.heavy();
   },
   deleteMatchday:(s,id)=>{
-    Game.snapshot(s,"deleteMatchday");
-    const md=s.matchdays.find(m=>m.id===id); if(!md) return;
-    md.isDeleted=true; md.deletedAt=Date.now(); Haptics.warning();
+    const idx=s.matchdays.findIndex(m=>m.id===id); if(idx<0) return;
+    Game.snapshot(s,"deleteMatchday",[idx]);
+    const md=s.matchdays[idx];
+    md.isDeleted=true; md.deletedAt=Date.now();
+    // Laufender Spieltag gelöscht → mit gleicher Aufstellung neu anfangen
+    if(idx===s.currentMatchdayIndex) Game._pushMatchday(s, md.rotationIndex);
+    Haptics.warning();
   },
   deleteRound:(s,id)=>{
-    Game.snapshot(s,"deleteRound");
-    const md=Game.currentMatchday(s);
-    const r=md.rounds.find(x=>x.id===id); if(!r) return;
+    const mi=s.matchdays.findIndex(m=>m.rounds.some(r=>r.id===id)); if(mi<0) return;
+    Game.snapshot(s,"deleteRound",[mi]);
+    const md=s.matchdays[mi], r=md.rounds.find(x=>x.id===id);
     if(r.winnerTeam!==null){
-      const worth=Game.roundWorth(r);
+      const worth=roundWorth(r);
       if(r.winnerTeam===0) md.teamARoundsWon=Math.max(0,md.teamARoundsWon-worth);
       else                 md.teamBRoundsWon=Math.max(0,md.teamBRoundsWon-worth);
     }
-    r.isDeleted=true; r.deletedAt=Date.now(); Haptics.warning();
+    r.isDeleted=true; r.deletedAt=Date.now();
+    // Laufende Runde gelöscht → neue Runde beginnen, sonst würde weiter in die gelöschte gezählt
+    if(mi===s.currentMatchdayIndex && r===md.rounds[md.rounds.length-1]) Game.startNewRound(s);
+    Haptics.warning();
   },
+  // Gilt ab dem aktuellen Spieltag (und für folgende), frühere bleiben unverändert
   setCustomTeams:(s,teamA,teamB,nameA,nameB)=>{
     Game.snapshot(s,"teamChange");
     s.customTeamA=teamA.slice(); s.customTeamB=teamB.slice();
-    s.customTeamNameA=nameA?nameA:null; s.customTeamNameB=nameB?nameB:null;
+    s.customTeamNameA=nameA||null; s.customTeamNameB=nameB||null;
+    Game.currentMatchday(s).teams=makeTeams(teamA,teamB,nameA,nameB);
   },
-  updateVariant:(s,variantKey,target,quickMode)=>{
-    Game.snapshot(s,"other"); s.variant=variantKey; s.targetPoints=target;
-    if(quickMode!==undefined && !!quickMode!==!!s.quickMode){ s.quickMode=!!quickMode; s.tricksA=0; s.tricksB=0; }
+  // Einstellungen übernehmen – nur wenn sich etwas geändert hat (ein Undo-Schritt)
+  applySettings:(s,{name,variant,target,quick,names})=>{
+    name=(name||"").trim() || s.name;
+    names=names.map((n,i)=>(n||"").trim() || s.players[i].name);
+    const changed = name!==s.name || variant!==s.variant || target!==s.targetPoints || !!quick!==!!s.quickMode
+      || names.some((n,i)=>n!==s.players[i].name);
+    if(!changed) return false;
+    Game.snapshot(s,"other");
+    s.name=name; s.variant=variant; s.targetPoints=target;
+    if(!!quick!==!!s.quickMode){ s.quickMode=!!quick; s.tricksA=0; s.tricksB=0; }
+    names.forEach((n,i)=>s.players[i].name=n);
+    Game._checkRoundEnd(s, null);   // Ziel gesenkt → Runde ggf. schon gewonnen
+    return true;
   },
-  updatePlayerName:(s,name,i)=>{ if(i<s.players.length) s.players[i].name=name; },
-  updateSessionName:(s,n)=>{ s.name=n; },
 
   exportText:(s)=>{
     const dt=(ms)=>fmt.dateMedium(ms);
     const tA=Game.teamAName(s), tB=Game.teamBName(s);
     const lines=[
-      `🃏 ${s.name} (${VARIANTS[s.variant].name})`,
+      `🃏 ${s.name} (${VARIANTS[s.variant].name}${s.quickMode?', Schnellmodus':''})`,
       `Erstellt: ${dt(s.createdAt)}`,
       `Ziel: ${s.targetPoints} Punkte`, "",
       "═══ GESAMT ═══",
@@ -345,12 +510,16 @@ const Game = {
     ];
     s.matchdays.forEach((md,i)=>{
       if(md.isDeleted) return;
+      const mA=Game.teamNameOf(s,md,0), mB=Game.teamNameOf(s,md,1);
       lines.push(`── Spieltag ${i+1} · ${dt(md.date)} ──`);
-      lines.push(`  ${tA} ${md.teamARoundsWon} : ${md.teamBRoundsWon} ${tB}`);
+      lines.push(`  ${mA} ${md.teamARoundsWon} : ${md.teamBRoundsWon} ${mB}`);
       md.rounds.forEach((r,j)=>{
         if(r.isDeleted) return;
+        if(r.winnerTeam===null && !r.hands.length && !r.teamAPoints && !r.teamBPoints) return; // leere Runde
         let row=`  Runde ${j+1}: ${r.teamAPoints}:${r.teamBPoints}`;
-        if(r.winnerTeam!==null) row+=` → ${r.winnerTeam===0?tA:tB} ✓${r.schneider?' (Schneider ×2)':''}`;
+        if(r.winnerTeam!==null) row+=` → ${r.winnerTeam===0?mA:mB} ✓${r.schneider?' (Schneider ×2)':''}`;
+        else if(r.closed) row+=` (unentschieden abgebrochen)`;
+        else row+=` (läuft)`;
         if(r.endedAt!=null){ const d=(r.endedAt-r.startedAt)/1000; row+=`  (${Math.floor(d/60)}min ${Math.floor(d)%60}s)`; }
         lines.push(row);
       });
@@ -369,7 +538,10 @@ let store = loadStore();
 let view = { screen:"home", sessionId:null, statsTab:0 };
 
 function currentSession(){ return store.sessions.find(x=>x.id===view.sessionId); }
-function commit(){ saveStore(); renderScreen(); scheduleSync(); }
+function commit(){
+  const s=view.screen==="game" ? currentSession() : null; if(s) s.updatedAt=Date.now();
+  saveStore(); renderScreen(); scheduleSync();
+}
 
 // ─────────────────────────────────────────────────────────────
 // Rendering: screens
@@ -410,8 +582,13 @@ function renderHome(){
     </div>${body}`;
   app.querySelectorAll('[data-act="new"]').forEach(b=>b.onclick=openNewGame);
   app.querySelectorAll('[data-act="data"]').forEach(b=>b.onclick=openDataSheet);
+  let longPressed=false;
   app.querySelectorAll('[data-sess]').forEach(c=>{
-    c.onclick=(e)=>{ if(e.target.closest('[data-del]')) return; openSession(c.dataset.sess); };
+    c.onclick=(e)=>{
+      if(longPressed){ longPressed=false; return; }   // Long-Press hat schon den Lösch-Dialog geöffnet
+      if(e.target.closest('[data-del]')) return;
+      openSession(c.dataset.sess);
+    };
   });
   app.querySelectorAll('[data-del]').forEach(b=>{
     b.onclick=(e)=>{ e.stopPropagation(); confirmDeleteSession(b.dataset.del); };
@@ -419,7 +596,8 @@ function renderHome(){
   });
   app.querySelectorAll('[data-sess]').forEach(c=>{
     c.oncontextmenu=(e)=>{ e.preventDefault(); confirmDeleteSession(c.dataset.sess); };
-    let t; c.addEventListener('touchstart',()=>{ t=setTimeout(()=>confirmDeleteSession(c.dataset.sess),600); },{passive:true});
+    let t; c.addEventListener('touchstart',()=>{ longPressed=false;
+      t=setTimeout(()=>{ longPressed=true; confirmDeleteSession(c.dataset.sess); },600); },{passive:true});
     ['touchend','touchmove','touchcancel'].forEach(ev=>c.addEventListener(ev,()=>clearTimeout(t),{passive:true}));
   });
 }
@@ -427,11 +605,8 @@ function renderHome(){
 function sessionCard(s){
   const totalA=s.matchdays.filter(m=>!m.isDeleted).reduce((a,m)=>a+m.teamARoundsWon,0);
   const totalB=s.matchdays.filter(m=>!m.isDeleted).reduce((a,m)=>a+m.teamBRoundsWon,0);
-  const rot=s.matchdays[s.currentMatchdayIndex].rotationIndex;
-  const comp = (s.customTeamA&&s.customTeamB) ? {teamA:s.customTeamA,teamB:s.customTeamB} : defaultTeams(rot);
-  const nameA = s.customTeamNameA || comp.teamA.map(i=>s.players[i].name).join(" & ");
-  const nameB = s.customTeamNameB || comp.teamB.map(i=>s.players[i].name).join(" & ");
-  const md=s.matchdays[s.currentMatchdayIndex];
+  const nameA = Game.teamAName(s), nameB = Game.teamBName(s);
+  const md=Game.currentMatchday(s);
   const ar=md.rounds.filter(r=>!r.isDeleted).length;
   return `<button class="sess-card" data-sess="${s.id}">
     <div class="ctx-del" data-del="${s.id}">${IC.trash}</div>
@@ -592,7 +767,7 @@ function renderGame(){
   app.querySelectorAll('[data-fold]').forEach(b=>b.onclick=()=>act(()=>Game.fold(s,+b.dataset.fold)));
   const bid=$('[data-bid]',app); if(bid) bid.onclick=()=>{ Game.increaseBid(s); commit(); };
   $('[data-undo]',app).onclick=()=>{ if(!canUndo)return; Game.undo(s); commit(); };
-  $('[data-next]',app).onclick=()=>{ Game.nextRound(s); commit(); };
+  $('[data-next]',app).onclick=()=>confirmNextRound(s,tA,tB);
   $('[data-newmd]',app).onclick=()=>confirmNewMatchday(s);
   $('[data-share]',app).onclick=()=>shareSession(s);
   app.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openSheet(b.dataset.open,s));
@@ -601,7 +776,7 @@ function renderGame(){
 function openSession(id){
   const s=store.sessions.find(x=>x.id===id);
   // Sicherung wie Swift ensureRound(): aktueller Spieltag hat immer >=1 Runde
-  if(s){ const md=s.matchdays[s.currentMatchdayIndex];
+  if(s){ const md=Game.currentMatchday(s);
     if(md && md.rounds.length===0){ md.rounds.push(newRound()); saveStore(); } }
   view.sessionId=id; view.screen="game"; renderGame(); requestWakeLock();
 }
@@ -707,7 +882,7 @@ function openNewGame(){
   $('#ng-create',el).onclick=()=>{
     const nm = name.trim()||`Spiel ${store.sessions.length+1}`;
     const s=newSession(nm,variant,quick);
-    store.sessions.push(s); saveStore();
+    store.sessions.push(s); saveStore(); scheduleSync();
     close(); openSession(s.id);
   };
 }
@@ -756,18 +931,20 @@ function openSettings(s){
     inp.oninput=e=>names[+inp.dataset.name]=e.target.value; });
   bindNames();
   $('#st-done',el).onclick=()=>{
-    Game.updateSessionName(s,sessionName);
-    Game.updateVariant(s,variant,target,quick);
-    names.forEach((n,i)=>{ if(n.trim()!=="") Game.updatePlayerName(s,n,i); });
-    saveStore(); close(); renderGame();
+    Game.lastRoundEvent=null;
+    const changed=Game.applySettings(s,{name:sessionName, variant, target, quick, names});
+    close();
+    if(changed) commit();
+    const ev=Game.lastRoundEvent; Game.lastRoundEvent=null;
+    if(ev) toast(`${ev.winner===0?Game.teamAName(s):Game.teamBName(s)} hat das neue Ziel erreicht`);
   };
 }
 
 // ── Team setup ──
 function openTeams(s){
-  let teamA=(s.customTeamA?s.customTeamA.slice():[0,1]);
-  let teamB=(s.customTeamB?s.customTeamB.slice():[2,3]);
-  let nameA=s.customTeamNameA||"", nameB=s.customTeamNameB||"";
+  const cur=Game.teams(s);
+  let teamA=cur.teamA.slice(), teamB=cur.teamB.slice();
+  let nameA=cur.nameA||"", nameB=cur.nameB||"";
   const editor=(side,team,other)=>{
     const rows=team.map(idx=>`
       <div class="player-row ${side}"><span class="pi">${IC.person}</span>
@@ -777,7 +954,7 @@ function openTeams(s){
   };
   const renderEditors=()=>editor('a',teamA,teamB)+editor('b',teamB,teamA);
   const body=`
-    <div class="info-box"><span class="i">${IC.info}</span>Tippe auf ⇄ um einen Spieler zu wechseln.</div>
+    <div class="info-box"><span class="i">${IC.info}</span>Tippe auf ⇄ um einen Spieler zu wechseln. Gilt ab dem aktuellen Spieltag.</div>
     <div id="te-editors">${renderEditors()}</div>
     <div class="section" style="margin-top:0"><p class="field-lbl">Teamnamen (optional)</p>
       <div class="names2">
@@ -801,13 +978,16 @@ function openTeams(s){
   $('#te-nameA',el).oninput=e=>nameA=e.target.value;
   $('#te-nameB',el).oninput=e=>nameB=e.target.value;
   $('#te-dice',el).onclick=()=>{
-    const i=[0,1,2,3].sort(()=>Math.random()-.5); teamA=[i[0],i[1]]; teamB=[i[2],i[3]];
+    const i=[0,1,2,3];
+    for(let k=i.length-1;k>0;k--){ const j=Math.floor(Math.random()*(k+1)); [i[k],i[j]]=[i[j],i[k]]; } // Fisher-Yates
+    teamA=[i[0],i[1]]; teamB=[i[2],i[3]];
     Haptics.medium(); $('#te-editors',el).innerHTML=renderEditors(); rewire();
   };
   $('#te-cancel',el).onclick=close;
   $('#te-apply',el).onclick=()=>{
+    if(teamA.length!==2 || teamB.length!==2){ toast("Jedes Team braucht genau 2 Spieler"); return; }
     Game.setCustomTeams(s,teamA,teamB,nameA.trim(),nameB.trim());
-    saveStore(); close(); renderGame();
+    close(); commit();
   };
 }
 
@@ -835,7 +1015,7 @@ function openUndo(s){
     body,
   });
   $('#uh-close',el).onclick=close;
-  const u=$('#uh-undo',el); if(u) u.onclick=()=>{ Game.undo(s); saveStore(); close(); renderGame(); };
+  const u=$('#uh-undo',el); if(u) u.onclick=()=>{ Game.undo(s); close(); commit(); };
 }
 
 // ── Stats ──
@@ -867,9 +1047,7 @@ function statsHistory(s){
   return s.matchdays.map((md,idx)=>matchdayCard(s,idx,md)).join("") || `<p class="muted-note">Noch keine Daten</p>`;
 }
 function matchdayCard(s,idx,md){
-  const comp = s.customTeamA ? {teamA:s.customTeamA,teamB:s.customTeamB} : defaultTeams(md.rotationIndex);
-  const nA = s.customTeamNameA || comp.teamA.map(i=>s.players[i].name).join(" & ");
-  const nB = s.customTeamNameB || comp.teamB.map(i=>s.players[i].name).join(" & ");
+  const nA = Game.teamNameOf(s,md,0), nB = Game.teamNameOf(s,md,1);
   let rounds="";
   if(!md.isDeleted){
     rounds=md.rounds.map((r,rIdx)=>{
@@ -878,7 +1056,8 @@ function matchdayCard(s,idx,md){
           <span class="rl strike">Runde ${rIdx+1} – gelöscht</span></div>`;
       }
       const dur = r.endedAt!=null ? `<div class="rt">${Math.floor((r.endedAt-r.startedAt)/60000)}m ${Math.floor((r.endedAt-r.startedAt)/1000)%60}s</div>`:'';
-      const crown = r.winnerTeam!==null ? `<span class="crown ${r.winnerTeam===0?'a':'b'}">${IC.crown}</span>${r.schneider?'<span class="schneider-badge">×2</span>':''}`:'';
+      const crown = r.winnerTeam!==null ? `<span class="crown ${r.winnerTeam===0?'a':'b'}">${IC.crown}</span>${r.schneider?'<span class="schneider-badge">×2</span>':''}`
+        : r.closed ? `<span class="muted-note">unentsch.</span>` : '';
       const delBtn = (r.winnerTeam!==null||r.teamAPoints>0||r.teamBPoints>0)
         ? `<button class="trash-btn" data-delr="${r.id}" style="width:auto">${IC.trash}</button>`:'';
       return `<div class="round-row">
@@ -1061,7 +1240,16 @@ function alertDialog({title,message,confirmLabel,destructive,onConfirm,cancelLab
 function confirmDeleteSession(id){
   alertDialog({title:"Spiel löschen?", message:"Alle Daten dieses Spiels werden dauerhaft gelöscht.",
     confirmLabel:"Löschen", destructive:true, onConfirm:()=>{
-      store.sessions=store.sessions.filter(x=>x.id!==id); saveStore(); renderHome(); }});
+      store.sessions=store.sessions.filter(x=>x.id!==id); commit(); }});
+}
+function confirmNextRound(s,tA,tB){
+  if(!Game.canEndRound(s)){ toast("In dieser Runde gibt es noch keine Punkte"); return; }
+  const r=Game.currentRound(s);
+  const msg = r.teamAPoints===r.teamBPoints
+    ? `Gleichstand ${r.teamAPoints}:${r.teamBPoints} – die Runde wird ohne Sieger beendet.`
+    : `${r.teamAPoints>r.teamBPoints?tA:tB} führt ${Math.max(r.teamAPoints,r.teamBPoints)}:${Math.min(r.teamAPoints,r.teamBPoints)} und bekommt die Runde.`;
+  alertDialog({title:"Runde vorzeitig beenden?", message:msg, confirmLabel:"Beenden",
+    onConfirm:()=>{ Game.nextRound(s); commit(); }});
 }
 function confirmNewMatchday(s){
   alertDialog({title:"Neuer Spieltag?", message:"Der aktuelle Spieltag wird abgeschlossen und ein neuer gestartet.",
@@ -1069,11 +1257,11 @@ function confirmNewMatchday(s){
 }
 function confirmDeleteMatchday(s,id,after){
   alertDialog({title:"Spieltag löschen?", message:"Spieltag wird als gelöscht markiert und aus der Wertung entfernt.",
-    confirmLabel:"Löschen", destructive:true, onConfirm:()=>{ Game.deleteMatchday(s,id); saveStore(); after&&after(); }});
+    confirmLabel:"Löschen", destructive:true, onConfirm:()=>{ Game.deleteMatchday(s,id); commit(); after&&after(); }});
 }
 function confirmDeleteRound(s,id,after){
   alertDialog({title:"Runde löschen?", message:"Runde wird aus der Wertung entfernt.",
-    confirmLabel:"Löschen", destructive:true, onConfirm:()=>{ Game.deleteRound(s,id); saveStore(); after&&after(); }});
+    confirmLabel:"Löschen", destructive:true, onConfirm:()=>{ Game.deleteRound(s,id); commit(); after&&after(); }});
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1119,20 +1307,28 @@ async function shareBackup(){
   exportBackup();
 }
 function parseBackup(raw){
-  const data=JSON.parse(raw);
+  let data;
+  try{ data=JSON.parse(raw); }catch(e){ throw new Error("Datei ist kein gültiges JSON."); }
   const sessions = (data && data.store && Array.isArray(data.store.sessions)) ? data.store.sessions
                  : Array.isArray(data && data.sessions) ? data.sessions : null;
   if(!sessions) throw new Error("Kein gültiges Watten-Backup.");
-  return sessions;
+  return sessions.map(normalizeSession).filter(Boolean);
+}
+function mergeToast(prefix,res){
+  const parts=[];
+  if(res.added) parts.push(`${res.added} neu`);
+  if(res.updated) parts.push(`${res.updated} aktualisiert`);
+  if(res.kept) parts.push(`${res.kept} lokal neuer, behalten`);
+  toast(`${prefix}: ${parts.join(", ")||"nichts zu tun"}`);
 }
 function importBackup(file, mode){ // mode: 'merge' | 'replace'
   const reader=new FileReader();
   reader.onload=()=>{
     try{
       const incoming=parseBackup(reader.result);
-      if(mode==="replace"){ store.sessions=incoming; }
-      else { const byId={}; store.sessions.forEach(s=>byId[s.id]=s); incoming.forEach(s=>byId[s.id]=s); store.sessions=Object.values(byId); }
-      saveStore(); toast(`${incoming.length} Spiel(e) importiert`); renderHome();
+      if(mode==="replace"){ store.sessions=incoming; toast(`${incoming.length} Spiel(e) importiert`); }
+      else { const m=mergeSessions(store.sessions,incoming); store.sessions=m.sessions; mergeToast("Import",m); }
+      view.screen="home"; commit();
     }catch(e){ toast("Import fehlgeschlagen: "+e.message); }
   };
   reader.onerror=()=>toast("Datei konnte nicht gelesen werden");
@@ -1144,8 +1340,8 @@ function exportAllCSV(){
   const rows=[["Spiel","Variante","Ziel","Spieltag","Datum","Runde","Startzeit","Endzeit","Dauer_s","PunkteA","PunkteB","Gewinner","TeamA","TeamB","Schneider","Geloescht"]];
   const iso=(ms)=> ms==null ? "" : new Date(ms).toISOString();
   for(const s of store.sessions){
-    const tA=Game.teamAName(s), tB=Game.teamBName(s);
     s.matchdays.forEach((md,mi)=>{
+      const tA=Game.teamNameOf(s,md,0), tB=Game.teamNameOf(s,md,1);
       md.rounds.forEach((r,ri)=>{
         rows.push([
           s.name, VARIANTS[s.variant].name, s.targetPoints, mi+1, iso(md.date), ri+1,
@@ -1176,15 +1372,16 @@ let syncCfg = loadSyncCfg();
 const syncConfigured = ()=> !!(syncCfg.url && syncCfg.token);
 function syncEndpoint(path){ return syncCfg.url.replace(/\/+$/,"") + path; }
 
-let syncTimer=null, syncBusy=false;
+let syncTimer=null, syncBusy=false, syncAgain=false;
 function scheduleSync(){
   if(!syncConfigured()) return;
   clearTimeout(syncTimer);
   syncTimer=setTimeout(syncPush, 2500);
 }
 async function syncPush(silent){
-  if(!syncConfigured() || syncBusy) return;
-  syncBusy=true;
+  if(!syncConfigured()) return;
+  if(syncBusy){ syncAgain=true; return; }   // nach dem laufenden Push nochmal sichern
+  syncBusy=true; syncAgain=false;
   const payload={ app:"watten-tracker", schema:BACKUP_SCHEMA, exportedAt:Date.now(), store };
   try{
     const res=await fetch(syncEndpoint("/backup"),{
@@ -1199,7 +1396,10 @@ async function syncPush(silent){
   }catch(e){
     renderSyncStatus(e.message);
     if(!silent) toast("Sync fehlgeschlagen: "+e.message);
-  }finally{ syncBusy=false; }
+  }finally{
+    syncBusy=false;
+    if(syncAgain){ syncAgain=false; scheduleSync(); }
+  }
 }
 async function syncPull(){
   if(!syncConfigured()) return toast("Sync nicht konfiguriert");
@@ -1207,9 +1407,9 @@ async function syncPull(){
     const res=await fetch(syncEndpoint("/backup"),{ headers:{ "Authorization":"Bearer "+syncCfg.token } });
     if(!res.ok) throw new Error("HTTP "+res.status);
     const incoming=parseBackup(await res.text());
-    const byId={}; store.sessions.forEach(s=>byId[s.id]=s); incoming.forEach(s=>byId[s.id]=s); store.sessions=Object.values(byId);
-    saveStore(); renderHome();
-    toast(`${incoming.length} Spiel(e) vom Home-Lab geladen`);
+    const m=mergeSessions(store.sessions,incoming); store.sessions=m.sessions;
+    view.screen="home"; saveStore(); renderHome();
+    mergeToast("Vom Home-Lab",m);
   }catch(e){ toast("Laden fehlgeschlagen: "+e.message); }
 }
 function renderSyncStatus(err){

@@ -2,7 +2,7 @@
  * Cache-first für die App-Shell → funktioniert vollständig offline.
  * Bei jedem Release CACHE hochzählen, damit Clients das Update ziehen.
  */
-const CACHE = "watten-v4";
+const CACHE = "watten-v5";
 const ASSETS = [
   "./",
   "./index.html",
