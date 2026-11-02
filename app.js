@@ -64,8 +64,10 @@ const TRICKS_TO_WIN = 3;
 const UNDO_LABEL = {
   addTrick:"Stich hinzugefügt", increaseBid:"Gebot erhöht", nextRound:"Nächste Runde",
   nextMatchday:"Neuer Spieltag", teamChange:"Teams geändert", deleteRound:"Runde gelöscht",
-  deleteMatchday:"Spieltag gelöscht", other:"Aktion",
+  deleteMatchday:"Spieltag gelöscht", winHand:"Spiel gewonnen", fold:"Gegangen", other:"Aktion",
 };
+// Ab so vielen fehlenden Punkten ist ein Team "gestrichen" (kann das Spiel mit dem Grundwert beenden)
+const GESTRICHEN_DIFF = 2;
 
 // ─────────────────────────────────────────────────────────────
 // Utilities
@@ -106,10 +108,10 @@ function newMatchday(rotationIndex){
   return {id:uuid(), rotationIndex, date:Date.now(), rounds:[newRound()],
           teamARoundsWon:0, teamBRoundsWon:0, isDeleted:false, deletedAt:null};
 }
-function newSession(name, variantKey){
+function newSession(name, variantKey, quickMode){
   const v = VARIANTS[variantKey] || VARIANTS.ladinisch;
   return {
-    id:uuid(), name, variant:v.key, targetPoints:v.defaultTarget,
+    id:uuid(), name, variant:v.key, targetPoints:v.defaultTarget, quickMode:!!quickMode,
     players:[1,2,3,4].map(i=>newPlayer(`Spieler ${i}`)),
     matchdays:[newMatchday(0)], currentMatchdayIndex:0,
     tricksA:0, tricksB:0, currentBid:2,
@@ -236,20 +238,41 @@ const Game = {
     if(s.tricksA>=TRICKS_TO_WIN) Game._award(s,0);
     else if(s.tricksB>=TRICKS_TO_WIN) Game._award(s,1);
   },
-  _award:(s,team)=>{
-    const bid=s.currentBid;
+  // Schnellmodus: Spiel direkt einem Team gutschreiben (ohne Stiche)
+  winHand:(s,team)=>{
+    if(Game.isRoundOver(s)) return;
+    Game.snapshot(s,"winHand"); Haptics.light();
+    Game._award(s,team);
+  },
+  // "Gehen": Team gibt nach einem Gebot auf → Gegner bekommt den Wert vor der Erhöhung
+  fold:(s,team)=>{
+    if(Game.isRoundOver(s) || s.currentBid<=2) return;
+    Game.snapshot(s,"fold"); Haptics.medium();
+    Game._award(s, team===0?1:0, s.currentBid-1, team);
+  },
+  // Gibt das Ergebnis der beendeten Runde zurück (oder null), damit die UI reagieren kann
+  _award:(s,team,points,foldedBy)=>{
+    const pts = points!=null ? points : s.currentBid;
     const md=Game.currentMatchday(s); const r=md.rounds[md.rounds.length-1];
-    r.hands.push({id:uuid(), winnerTeam:team, pointsAwarded:bid, timestamp:Date.now()});
-    if(team===0) r.teamAPoints+=bid; else r.teamBPoints+=bid;
+    const hand={id:uuid(), winnerTeam:team, pointsAwarded:pts, timestamp:Date.now()};
+    if(foldedBy!=null) hand.foldedBy=foldedBy;
+    r.hands.push(hand);
+    if(team===0) r.teamAPoints+=pts; else r.teamBPoints+=pts;
     Game.resetHand(s);
     if(r.teamAPoints>=s.targetPoints || r.teamBPoints>=s.targetPoints){
       const w = r.teamAPoints>=s.targetPoints ? 0 : 1;
+      const loserPts = w===0 ? r.teamBPoints : r.teamAPoints;
       r.winnerTeam=w; r.endedAt=Date.now();
-      if(w===0) md.teamARoundsWon++; else md.teamBRoundsWon++;
+      r.schneider = loserPts===0;           // Gschneidert → zählt 2 Buammaln
+      const worth = Game.roundWorth(r);
+      if(w===0) md.teamARoundsWon+=worth; else md.teamBRoundsWon+=worth;
       Haptics.success();
       Game.startNewRound(s);
+      Game.lastRoundEvent={winner:w, schneider:r.schneider};
     }
   },
+  roundWorth:(r)=> r.schneider ? 2 : 1,
+  isGestrichen:(s,pts)=> pts < s.targetPoints && s.targetPoints-pts <= GESTRICHEN_DIFF,
   increaseBid:(s)=>{
     if(Game.isRoundOver(s)) return;
     Game.snapshot(s,"increaseBid"); s.currentBid++; Haptics.medium();
@@ -291,8 +314,9 @@ const Game = {
     const md=Game.currentMatchday(s);
     const r=md.rounds.find(x=>x.id===id); if(!r) return;
     if(r.winnerTeam!==null){
-      if(r.winnerTeam===0) md.teamARoundsWon=Math.max(0,md.teamARoundsWon-1);
-      else                 md.teamBRoundsWon=Math.max(0,md.teamBRoundsWon-1);
+      const worth=Game.roundWorth(r);
+      if(r.winnerTeam===0) md.teamARoundsWon=Math.max(0,md.teamARoundsWon-worth);
+      else                 md.teamBRoundsWon=Math.max(0,md.teamBRoundsWon-worth);
     }
     r.isDeleted=true; r.deletedAt=Date.now(); Haptics.warning();
   },
@@ -301,8 +325,9 @@ const Game = {
     s.customTeamA=teamA.slice(); s.customTeamB=teamB.slice();
     s.customTeamNameA=nameA?nameA:null; s.customTeamNameB=nameB?nameB:null;
   },
-  updateVariant:(s,variantKey,target)=>{
+  updateVariant:(s,variantKey,target,quickMode)=>{
     Game.snapshot(s,"other"); s.variant=variantKey; s.targetPoints=target;
+    if(quickMode!==undefined && !!quickMode!==!!s.quickMode){ s.quickMode=!!quickMode; s.tricksA=0; s.tricksB=0; }
   },
   updatePlayerName:(s,name,i)=>{ if(i<s.players.length) s.players[i].name=name; },
   updateSessionName:(s,n)=>{ s.name=n; },
@@ -325,7 +350,7 @@ const Game = {
       md.rounds.forEach((r,j)=>{
         if(r.isDeleted) return;
         let row=`  Runde ${j+1}: ${r.teamAPoints}:${r.teamBPoints}`;
-        if(r.winnerTeam!==null) row+=` → ${r.winnerTeam===0?tA:tB} ✓`;
+        if(r.winnerTeam!==null) row+=` → ${r.winnerTeam===0?tA:tB} ✓${r.schneider?' (Schneider ×2)':''}`;
         if(r.endedAt!=null){ const d=(r.endedAt-r.startedAt)/1000; row+=`  (${Math.floor(d/60)}min ${Math.floor(d)%60}s)`; }
         lines.push(row);
       });
@@ -438,11 +463,13 @@ function renderGame(){
   const scoreCol=(side,name,pts,won)=>{
     const frac=Math.min(1,pts/tgt);
     const dots=Array.from({length:Math.max(1,won+1)},(_,i)=>`<i class="${i<won?'on':''}"></i>`).join("");
+    const gestrichen=!over && Game.isGestrichen(s,pts);
     return `<div class="score-col ${side}">
       <div class="tn">${esc(name)}</div>
       <div class="pts">${pts}</div>
       <div class="progress"><span style="width:${(frac*100).toFixed(1)}%"></span></div>
       <div class="tgt">/ ${tgt}</div>
+      ${gestrichen?`<div class="gestrichen">Gestrichen</div>`:''}
       <div class="rdots">${dots}</div>
       <div class="rwon">${roundLabel(won)}</div>
     </div>`;
@@ -457,6 +484,51 @@ function renderGame(){
   };
 
   const tA=Game.teamAName(s), tB=Game.teamBName(s);
+  const quick=!!s.quickMode;
+  const canFold=!over && s.currentBid>2;
+  const foldRow = canFold ? `
+      <div class="fold-row">
+        <button class="fold-btn a" data-fold="0"><span class="fg">Geht</span><span class="fn">${esc(tA)}</span></button>
+        <button class="fold-btn b" data-fold="1"><span class="fg">Geht</span><span class="fn">${esc(tB)}</span></button>
+      </div>
+      <div class="fold-hint">Gehen → Gegner bekommt ${s.currentBid-1} ${s.currentBid-1===1?'Punkt':'Punkte'}</div>` : '';
+  const handPanel = quick ? `
+    <div class="panel">
+      <div class="hand-top">
+        <span class="lbl">Aktuelles Spiel · Schnellmodus</span>
+        <span class="bid">${IC.trophy}Gebot: ${s.currentBid}</span>
+      </div>
+      <div class="quick-worth">Spiel zählt <b>${s.currentBid}</b> ${s.currentBid===1?'Punkt':'Punkte'}</div>
+      ${foldRow}
+    </div>` : `
+    <div class="panel">
+      <div class="hand-top">
+        <span class="lbl">Aktuelles Spiel</span>
+        <span class="bid">${IC.trophy}Gebot: ${s.currentBid}</span>
+      </div>
+      <div class="trick-row">
+        ${trickCol('a',tA,s.tricksA)}
+        <div class="trick-vs">vs</div>
+        ${trickCol('b',tB,s.tricksB)}
+      </div>
+      ${over&&r.winnerTeam!==null?`<div class="roundover ${r.winnerTeam===0?'a':'b'}"><span class="crown">${IC.crown}</span>${esc(r.winnerTeam===0?tA:tB)} gewinnt die Runde!</div>`:''}
+      ${foldRow}
+    </div>`;
+  const winButtons = quick ? `
+    <div>
+      <div class="row2">
+        <button class="bigbtn btn-a" data-win="0"><span class="ic">${IC.plus}</span>${s.currentBid} Punkte</button>
+        <button class="bigbtn btn-b" data-win="1"><span class="ic">${IC.plus}</span>${s.currentBid} Punkte</button>
+      </div>
+      <div class="trick-labels"><span class="a">${esc(tA)}</span><span class="b">${esc(tB)}</span></div>
+    </div>` : `
+    <div>
+      <div class="row2">
+        <button class="bigbtn btn-a" data-trick="0"><span class="ic">${IC.hand}</span>+ Stich</button>
+        <button class="bigbtn btn-b" data-trick="1"><span class="ic">${IC.hand}</span>+ Stich</button>
+      </div>
+      <div class="trick-labels"><span class="a">${esc(tA)}</span><span class="b">${esc(tB)}</span></div>
+    </div>`;
 
   app.innerHTML = `
   <div class="topbar game">
@@ -491,27 +563,9 @@ function renderGame(){
       </div>
     </div>
 
-    <div class="panel">
-      <div class="hand-top">
-        <span class="lbl">Aktuelles Spiel</span>
-        <span class="bid">${IC.trophy}Gebot: ${s.currentBid}</span>
-      </div>
-      <div class="trick-row">
-        ${trickCol('a',tA,s.tricksA)}
-        <div class="trick-vs">vs</div>
-        ${trickCol('b',tB,s.tricksB)}
-      </div>
-      ${over&&r.winnerTeam!==null?`<div class="roundover ${r.winnerTeam===0?'a':'b'}"><span class="crown">${IC.crown}</span>${esc(r.winnerTeam===0?tA:tB)} gewinnt die Runde!</div>`:''}
-    </div>
+    ${handPanel}
 
-    ${!over?`
-    <div>
-      <div class="row2">
-        <button class="bigbtn btn-a" data-trick="0"><span class="ic">${IC.hand}</span>+ Stich</button>
-        <button class="bigbtn btn-b" data-trick="1"><span class="ic">${IC.hand}</span>+ Stich</button>
-      </div>
-      <div class="trick-labels"><span class="a">${esc(tA)}</span><span class="b">${esc(tB)}</span></div>
-    </div>`:''}
+    ${!over?winButtons:''}
 
     <div class="row2">
       ${!over?`<button class="bigbtn btn-gold" data-bid><span class="ic">${IC.arrowUp}</span>Bieten (${s.currentBid+1})</button>`:''}
@@ -527,8 +581,15 @@ function renderGame(){
     </div>
   </div></div>`;
 
-  $('[data-back]',app).onclick=()=>{ view.screen="home"; renderHome(); };
-  app.querySelectorAll('[data-trick]').forEach(b=>b.onclick=()=>{ Game.addTrick(s,+b.dataset.trick); commit(); });
+  $('[data-back]',app).onclick=()=>{ view.screen="home"; releaseWakeLock(); renderHome(); };
+  const act=(fn)=>{
+    Game.lastRoundEvent=null; fn(); commit();
+    const ev=Game.lastRoundEvent; Game.lastRoundEvent=null;
+    if(ev && ev.schneider) toast(`Gschneidert! ${ev.winner===0?tA:tB} bekommt 2 Runden`);
+  };
+  app.querySelectorAll('[data-trick]').forEach(b=>b.onclick=()=>act(()=>Game.addTrick(s,+b.dataset.trick)));
+  app.querySelectorAll('[data-win]').forEach(b=>b.onclick=()=>act(()=>Game.winHand(s,+b.dataset.win)));
+  app.querySelectorAll('[data-fold]').forEach(b=>b.onclick=()=>act(()=>Game.fold(s,+b.dataset.fold)));
   const bid=$('[data-bid]',app); if(bid) bid.onclick=()=>{ Game.increaseBid(s); commit(); };
   $('[data-undo]',app).onclick=()=>{ if(!canUndo)return; Game.undo(s); commit(); };
   $('[data-next]',app).onclick=()=>{ Game.nextRound(s); commit(); };
@@ -542,8 +603,27 @@ function openSession(id){
   // Sicherung wie Swift ensureRound(): aktueller Spieltag hat immer >=1 Runde
   if(s){ const md=s.matchdays[s.currentMatchdayIndex];
     if(md && md.rounds.length===0){ md.rounds.push(newRound()); saveStore(); } }
-  view.sessionId=id; view.screen="game"; renderGame();
+  view.sessionId=id; view.screen="game"; renderGame(); requestWakeLock();
 }
+
+// ─────────────────────────────────────────────────────────────
+// Bildschirm wach halten, solange ein Spiel offen ist (Screen Wake Lock API)
+// ─────────────────────────────────────────────────────────────
+let wakeLock=null;
+async function requestWakeLock(){
+  if(!('wakeLock' in navigator) || wakeLock || document.visibilityState!=='visible') return;
+  try{
+    wakeLock=await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release',()=>{ wakeLock=null; });
+  }catch(e){ wakeLock=null; }
+}
+function releaseWakeLock(){
+  if(wakeLock){ wakeLock.release().catch(()=>{}); wakeLock=null; }
+}
+// Lock wird vom Browser beim Verlassen der App freigegeben → beim Zurückkommen neu holen
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible' && view.screen==='game') requestWakeLock();
+});
 
 // ─────────────────────────────────────────────────────────────
 // Sheets / Modals
@@ -579,8 +659,16 @@ function openSheet(kind,s){
 }
 
 // ── New game ──
+function modeOpts(quick){
+  return [[false,"Mit Stichen","Stiche zählen · Spiel endet bei 3 Stichen"],
+          [true,"Schnellmodus","Ohne Stiche · Spiel mit Gebot direkt einem Team geben"]]
+    .map(([q,n,d])=>`<button class="variant-opt ${q===quick?'sel':''}" data-q="${q?1:0}">
+      <div class="vo-txt"><div class="vo-name">${n}</div><div class="vo-desc">${d}</div></div>
+      ${q===quick?`<span class="vo-check">${IC.check}</span>`:''}
+    </button>`).join("");
+}
 function openNewGame(){
-  let name="", variant="ladinisch";
+  let name="", variant="ladinisch", quick=false;
   const variantOpts=()=>VARIANT_ORDER.map(k=>{
     const v=VARIANTS[k];
     return `<button class="variant-opt ${k===variant?'sel':''}" data-v="${k}">
@@ -596,6 +684,10 @@ function openNewGame(){
     <div class="section">
       <p class="field-lbl">Spielvariante</p>
       <div id="ng-variants">${variantOpts()}</div>
+    </div>
+    <div class="section">
+      <p class="field-lbl">Zählweise</p>
+      <div id="ng-mode">${modeOpts(quick)}</div>
     </div>`;
   const {el,close}=sheetShell({
     title:"Neues Spiel",
@@ -608,10 +700,13 @@ function openNewGame(){
   const rewire=()=>$('#ng-variants',el).querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{
     variant=b.dataset.v; $('#ng-variants',el).innerHTML=variantOpts(); rewire(); });
   rewire();
+  const rewireM=()=>$('#ng-mode',el).querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{
+    quick=b.dataset.q==="1"; $('#ng-mode',el).innerHTML=modeOpts(quick); rewireM(); });
+  rewireM();
   $('#ng-cancel',el).onclick=close;
   $('#ng-create',el).onclick=()=>{
     const nm = name.trim()||`Spiel ${store.sessions.length+1}`;
-    const s=newSession(nm,variant);
+    const s=newSession(nm,variant,quick);
     store.sessions.push(s); saveStore();
     close(); openSession(s.id);
   };
@@ -620,7 +715,7 @@ function openNewGame(){
 // ── Settings ──
 function openSettings(s){
   let names=s.players.map(p=>p.name);
-  let sessionName=s.name, variant=s.variant, target=s.targetPoints;
+  let sessionName=s.name, variant=s.variant, target=s.targetPoints, quick=!!s.quickMode;
   const variantOpts=()=>VARIANT_ORDER.map(k=>{
     const v=VARIANTS[k];
     return `<button class="variant-opt ${k===variant?'sel':''}" data-v="${k}">
@@ -640,6 +735,7 @@ function openSettings(s){
         <div class="ctrls"><button id="st-minus">−</button><span class="sepv"></span><button id="st-plus">+</button></div></div>
       <p class="hint" id="st-hint">Standard für ${esc(VARIANTS[variant].name)}: ${VARIANTS[variant].defaultTarget} Punkte</p>
     </div>
+    <div class="section"><p class="field-lbl">Zählweise</p><div id="st-mode">${modeOpts(quick)}</div></div>
     <div class="section"><p class="field-lbl">Spielernamen</p><div id="st-names">${nameRows()}</div></div>`;
   const {el,close}=sheetShell({ title:"Einstellungen", trail:`<button id="st-done">Fertig</button>`, body });
 
@@ -651,6 +747,9 @@ function openSettings(s){
     $('#st-hint',el).textContent=`Standard für ${VARIANTS[variant].name}: ${VARIANTS[variant].defaultTarget} Punkte`;
   });
   rewireV();
+  const rewireM=()=>$('#st-mode',el).querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{
+    quick=b.dataset.q==="1"; $('#st-mode',el).innerHTML=modeOpts(quick); rewireM(); });
+  rewireM();
   const setT=(d)=>{ target=Math.min(30,Math.max(5,target+d)); $('#st-target',el).textContent=`Bis ${target} Punkte`; };
   $('#st-minus',el).onclick=()=>setT(-1); $('#st-plus',el).onclick=()=>setT(1);
   const bindNames=()=>$('#st-names',el).querySelectorAll('[data-name]').forEach(inp=>{
@@ -658,7 +757,7 @@ function openSettings(s){
   bindNames();
   $('#st-done',el).onclick=()=>{
     Game.updateSessionName(s,sessionName);
-    Game.updateVariant(s,variant,target);
+    Game.updateVariant(s,variant,target,quick);
     names.forEach((n,i)=>{ if(n.trim()!=="") Game.updatePlayerName(s,n,i); });
     saveStore(); close(); renderGame();
   };
@@ -715,9 +814,11 @@ function openTeams(s){
 // ── Undo history ──
 function openUndo(s){
   const undoIcon={addTrick:IC.hand,increaseBid:IC.arrowUp,nextRound:IC.arrowRight,
-    nextMatchday:IC.flag,teamChange:IC.shuffle,deleteRound:IC.trash,deleteMatchday:IC.trash,other:IC.pencil};
+    nextMatchday:IC.flag,teamChange:IC.shuffle,deleteRound:IC.trash,deleteMatchday:IC.trash,other:IC.pencil,
+    winHand:IC.plus,fold:IC.flag};
   const undoColor={addTrick:COL.teamA,increaseBid:COL.gold,nextRound:COL.border,
-    nextMatchday:"#C44B4B",teamChange:"#8A9E8A",deleteRound:"#C44B4B",deleteMatchday:"#C44B4B",other:"#8A9E8A"};
+    nextMatchday:"#C44B4B",teamChange:"#8A9E8A",deleteRound:"#C44B4B",deleteMatchday:"#C44B4B",other:"#8A9E8A",
+    winHand:COL.teamA,fold:COL.gold};
   const hist=Game.undoHistory(s);
   const body = hist.length===0
     ? `<div class="empty-mini"><span class="big">${IC.clock}</span><span>Keine Aktionen</span></div>`
@@ -777,7 +878,7 @@ function matchdayCard(s,idx,md){
           <span class="rl strike">Runde ${rIdx+1} – gelöscht</span></div>`;
       }
       const dur = r.endedAt!=null ? `<div class="rt">${Math.floor((r.endedAt-r.startedAt)/60000)}m ${Math.floor((r.endedAt-r.startedAt)/1000)%60}s</div>`:'';
-      const crown = r.winnerTeam!==null ? `<span class="crown ${r.winnerTeam===0?'a':'b'}">${IC.crown}</span>`:'';
+      const crown = r.winnerTeam!==null ? `<span class="crown ${r.winnerTeam===0?'a':'b'}">${IC.crown}</span>${r.schneider?'<span class="schneider-badge">×2</span>':''}`:'';
       const delBtn = (r.winnerTeam!==null||r.teamAPoints>0||r.teamBPoints>0)
         ? `<button class="trash-btn" data-delr="${r.id}" style="width:auto">${IC.trash}</button>`:'';
       return `<div class="round-row">
@@ -1040,7 +1141,7 @@ function importBackup(file, mode){ // mode: 'merge' | 'replace'
 // CSV: eine Zeile pro Runde über alle Spiele – gut für Tabellen/Obsidian
 function exportAllCSV(){
   const csvEsc=(v)=>{ const t=String(v??""); return /[";\n]/.test(t) ? '"'+t.replace(/"/g,'""')+'"' : t; };
-  const rows=[["Spiel","Variante","Ziel","Spieltag","Datum","Runde","Startzeit","Endzeit","Dauer_s","PunkteA","PunkteB","Gewinner","TeamA","TeamB","Geloescht"]];
+  const rows=[["Spiel","Variante","Ziel","Spieltag","Datum","Runde","Startzeit","Endzeit","Dauer_s","PunkteA","PunkteB","Gewinner","TeamA","TeamB","Schneider","Geloescht"]];
   const iso=(ms)=> ms==null ? "" : new Date(ms).toISOString();
   for(const s of store.sessions){
     const tA=Game.teamAName(s), tB=Game.teamBName(s);
@@ -1050,7 +1151,7 @@ function exportAllCSV(){
           s.name, VARIANTS[s.variant].name, s.targetPoints, mi+1, iso(md.date), ri+1,
           iso(r.startedAt), iso(r.endedAt), r.endedAt!=null?Math.round((r.endedAt-r.startedAt)/1000):"",
           r.teamAPoints, r.teamBPoints,
-          r.winnerTeam==null ? "" : (r.winnerTeam===0?tA:tB), tA, tB,
+          r.winnerTeam==null ? "" : (r.winnerTeam===0?tA:tB), tA, tB, r.schneider ? "ja":"nein",
           (s.matchdays[mi].isDeleted||r.isDeleted) ? "ja":"nein",
         ]);
       });
