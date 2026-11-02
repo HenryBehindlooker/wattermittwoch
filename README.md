@@ -4,6 +4,16 @@ Kartenspiel-Zähler für **Watten** (Watten / Ladinisch / Kritisch) – Stich-Tr
 Gebotssystem, Spieltage, Undo, Statistiken und Diagramme. Läuft komplett im
 Browser: kein Framework, kein Build-Step, kein Backend.
 
+## Spielregeln in der App
+
+- **Zählweise:** pro Spiel wählbar – *Mit Stichen* (Spiel endet bei 3 Stichen) oder
+  *Schnellmodus* (ohne Stiche, das Spiel wird mit dem aktuellen Gebot direkt einem Team gegeben).
+- **Gehen:** nach einem Gebot kann ein Team gehen → der Gegner bekommt den Wert vor der
+  Erhöhung (bei 3 → 2 Punkte).
+- **Gestrichen:** fehlen einem Team nur noch 2 Punkte oder weniger, wird das angezeigt.
+- **Schneider:** gewinnt ein Team die Runde, während der Gegner 0 Punkte hat, zählt sie doppelt (2 Buammaln).
+- Während ein Spiel offen ist, bleibt der Bildschirm an (Screen Wake Lock).
+
 ## Dateien
 
 | Datei | Zweck |

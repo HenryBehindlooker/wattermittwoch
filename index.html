@@ -93,6 +93,7 @@ input{font-family:inherit;}
 .ctx-del{position:absolute; top:8px; right:8px; width:30px; height:30px; border-radius:8px;
   display:grid; place-items:center; color:var(--danger); background:rgba(0,0,0,.25); opacity:0; transition:opacity .15s;}
 .sess-card:hover .ctx-del{opacity:1;}
+@media (hover:none){ .ctx-del{display:none;} } /* Touch: unsichtbarer Button würde sonst Tipps auf die Ecke abfangen */
 
 /* ── Empty state ─────────────────────────────────────── */
 .empty{display:flex; flex-direction:column; align-items:center; gap:18px; text-align:center;
@@ -131,7 +132,7 @@ input{font-family:inherit;}
 .progress > span{display:block; height:100%; border-radius:3px;}
 .score-col.a .progress > span{background:var(--teamA);} .score-col.b .progress > span{background:var(--teamB);}
 .score-col .tgt{font-size:10px; color:var(--muted);}
-.rdots{display:flex; gap:4px; margin-top:2px;}
+.rdots{display:flex; flex-wrap:wrap; justify-content:center; gap:4px; margin-top:2px; max-width:100%;}
 .rdots i{width:9px; height:9px; border-radius:50%; background:var(--border); display:block;}
 .score-col.a .rdots i.on{background:var(--teamA);} .score-col.b .rdots i.on{background:var(--teamB);}
 .rwon{font-size:11px; color:var(--muted);}
@@ -167,6 +168,20 @@ input{font-family:inherit;}
 .row2{display:flex; gap:10px;}
 .trick-labels{display:flex; justify-content:space-between; font-size:11px; margin-top:2px;}
 .trick-labels .a{color:var(--teamA);} .trick-labels .b{color:var(--teamB);}
+.gestrichen{font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--bg);
+  background:var(--gold); padding:3px 9px; border-radius:10px; margin-top:2px;}
+.quick-worth{text-align:center; font-size:15px; color:var(--muted); margin-top:12px;}
+.quick-worth b{font-family:var(--sysrnd); font-size:28px; color:var(--gold); margin:0 2px;}
+.fold-row{display:flex; gap:10px; margin-top:14px;}
+.fold-btn{flex:1; min-width:0; min-height:48px; border-radius:10px; background:var(--card); padding:6px 10px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;}
+.fold-btn .fg{font-size:15px; font-weight:700;}
+.fold-btn .fn{font-size:10px; opacity:.8; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.fold-btn.a{color:var(--teamA); border:1.5px solid rgba(74,144,217,.5);}
+.fold-btn.b{color:var(--teamB); border:1.5px solid rgba(217,107,74,.5);}
+.fold-btn:active{filter:brightness(1.2);}
+.fold-hint{font-size:11px; color:var(--muted); text-align:center; margin-top:6px;}
+.schneider-badge{font-size:10px; font-weight:800; color:var(--bg); background:var(--gold); border-radius:5px; padding:1px 5px;}
 .undo-btn{flex:1; min-height:var(--tap); border-radius:var(--cr); background:var(--surface); color:#fff;
   display:flex; align-items:center; justify-content:center; gap:6px; padding:0 12px;}
 .undo-btn .txt{display:flex; flex-direction:column; align-items:flex-start; line-height:1.1;}
