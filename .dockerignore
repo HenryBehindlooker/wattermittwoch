@@ -4,3 +4,6 @@ README.md
 docker-compose.yml
 Dockerfile
 .gitignore
+tests/
+package.json
+package-lock.json

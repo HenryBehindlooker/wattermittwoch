@@ -47,6 +47,7 @@ const IC = {
   upload:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m0 0L8 7m4-4l4 4"/><path d="M5 21h14"/></svg>',
   table:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>',
   shield:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></svg>',
+  chevron:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   cloud:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-1-7.9A5 5 0 0 1 15.9 8 4.5 4.5 0 0 1 17 18H7z"/></svg>',
 };
 
@@ -66,6 +67,7 @@ const UNDO_LABEL = {
   nextMatchday:"Neuer Spieltag", teamChange:"Teams geändert", deleteRound:"Runde gelöscht",
   deleteMatchday:"Spieltag gelöscht", winHand:"Spiel gewonnen", fold:"Gegangen", other:"Aktion",
 };
+const UNDO_MAX = 30;
 // Ab so vielen fehlenden Punkten ist ein Team "gestrichen" (kann das Spiel mit dem Grundwert beenden)
 const GESTRICHEN_DIFF = 2;
 
@@ -121,11 +123,12 @@ function newMatchday(rotationIndex, teams){
           teamARoundsWon:0, teamBRoundsWon:0, isDeleted:false, deletedAt:null,
           teams: teams || makeTeams(d.teamA, d.teamB)};
 }
-function newSession(name, variantKey, quickMode){
+function newSession(name, variantKey, quickMode, playerNames){
   const v = VARIANTS[variantKey] || VARIANTS.ladinisch;
+  const pn = playerNames || [];
   return {
     id:uuid(), name, variant:v.key, targetPoints:v.defaultTarget, quickMode:!!quickMode,
-    players:[1,2,3,4].map(i=>newPlayer(`Spieler ${i}`)),
+    players:[1,2,3,4].map(i=>newPlayer(cleanStr(pn[i-1]||"",MAXLEN.player) || `Spieler ${i}`)),
     matchdays:[newMatchday(0)], currentMatchdayIndex:0,
     tricksA:0, tricksB:0, currentBid:2,
     customTeamA:null, customTeamB:null, customTeamNameA:null, customTeamNameB:null,
@@ -133,50 +136,77 @@ function newSession(name, variantKey, quickMode){
   };
 }
 
-const isTeamIdx = (t)=> Array.isArray(t) && t.length===2 && t.every(i=>Number.isInteger(i) && i>=0 && i<4);
+// ── Eingangsprüfung für geladene/importierte Daten ──
+// IDs landen in HTML-Attributen, Zeitstempel in Intl-Formatierern → strikt prüfen.
+const MAXLEN = {session:40, player:20, team:30};
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const safeId   = (v)=> (typeof v==="string" && SAFE_ID.test(v)) ? v : uuid();
+const safeTs   = (v,fallback)=> (Number.isFinite(v) && v>0 && v<8.64e15) ? v : fallback;
+const safeInt  = (v,min,max,fallback)=> (Number.isFinite(v) && v>=min) ? Math.min(max,Math.floor(v)) : fallback;
+// nur echte Texte/Zahlen übernehmen – Objekte könnten beim Umwandeln eine Exception werfen
+const cleanStr = (v,max)=> (typeof v==="string" ? v : typeof v==="number" ? String(v) : "").replace(/[\u0000-\u001f\u007f]/g," ").trim().slice(0,max);
+
+const isTeamIdx = (t)=> Array.isArray(t) && t.length===2 && t[0]!==t[1] && t.every(i=>Number.isInteger(i) && i>=0 && i<4);
 const roundWorth = (r)=> r.schneider ? 2 : 1;
 
 // Bringt geladene/importierte Daten auf den aktuellen Stand und repariert
 // Inkonsistenzen aus älteren Versionen. Gibt null zurück, wenn unbrauchbar.
 function normalizeSession(s){
-  if(!s || typeof s!=="object" || !s.id || !Array.isArray(s.matchdays)) return null;
+  if(!s || typeof s!=="object" || Array.isArray(s) || !s.id || !Array.isArray(s.matchdays)) return null;
+  s.id=safeId(s.id);
+  s.createdAt=safeTs(s.createdAt, Date.now());
   // Änderungszeitpunkt festhalten, bevor unten repariert wird (sonst wirken alte Backups "neu")
-  if(!Number.isFinite(s.updatedAt)) s.updatedAt=sessionUpdatedAt(s);
-  if(!VARIANTS[s.variant]) s.variant="ladinisch";
-  if(!(Number.isFinite(s.targetPoints) && s.targetPoints>=1)) s.targetPoints=VARIANTS[s.variant].defaultTarget;
-  if(typeof s.name!=="string" || !s.name.trim()) s.name="Spiel";
+  s.updatedAt=safeTs(s.updatedAt, null) || safeTs(sessionUpdatedAt(s), s.createdAt);
+  if(!Object.prototype.hasOwnProperty.call(VARIANTS, s.variant)) s.variant="ladinisch";
+  s.targetPoints=safeInt(s.targetPoints, 1, 99, VARIANTS[s.variant].defaultTarget);
+  s.name=cleanStr(s.name, MAXLEN.session) || "Spiel";
   if(!Array.isArray(s.players)) s.players=[];
   s.players=s.players.filter(p=>p&&typeof p==="object").slice(0,4);
-  s.players.forEach((p,i)=>{ if(!p.id) p.id=uuid(); if(typeof p.name!=="string"||!p.name.trim()) p.name=`Spieler ${i+1}`; });
+  s.players.forEach((p,i)=>{ p.id=safeId(p.id); p.name=cleanStr(p.name, MAXLEN.player) || `Spieler ${i+1}`; });
   while(s.players.length<4) s.players.push(newPlayer(`Spieler ${s.players.length+1}`));
   s.quickMode=!!s.quickMode;
-  if(!Number.isInteger(s.tricksA) || s.tricksA<0) s.tricksA=0;
-  if(!Number.isInteger(s.tricksB) || s.tricksB<0) s.tricksB=0;
-  if(!Number.isInteger(s.currentBid) || s.currentBid<2) s.currentBid=2;
-  if(!Array.isArray(s.undoStack)) s.undoStack=[];
+  s.tricksA=safeInt(s.tricksA, 0, TRICKS_TO_WIN-1, 0);
+  s.tricksB=safeInt(s.tricksB, 0, TRICKS_TO_WIN-1, 0);
+  s.currentBid=safeInt(s.currentBid, 2, 99, 2);
   if(!(isTeamIdx(s.customTeamA) && isTeamIdx(s.customTeamB))){ s.customTeamA=null; s.customTeamB=null; }
-  s.customTeamNameA=s.customTeamNameA||null; s.customTeamNameB=s.customTeamNameB||null;
-  if(!s.createdAt) s.createdAt=Date.now();
+  s.customTeamNameA=cleanStr(s.customTeamNameA, MAXLEN.team)||null;
+  s.customTeamNameB=cleanStr(s.customTeamNameB, MAXLEN.team)||null;
+  // Undo-Einträge: nur bekannte Aktionen und gültige Zeitstempel (Inhalt wird beim Zurückspielen erneut geprüft)
+  s.undoStack=(Array.isArray(s.undoStack)?s.undoStack:[])
+    .filter(u=>u&&typeof u==="object"&&!Array.isArray(u)).slice(-UNDO_MAX);
+  s.undoStack.forEach(u=>{
+    if(!Object.prototype.hasOwnProperty.call(UNDO_LABEL, u.action)) u.action="other";
+    u.timestamp=safeTs(u.timestamp, s.updatedAt);
+  });
 
   s.matchdays=s.matchdays.filter(m=>m&&typeof m==="object");
   if(!s.matchdays.length) s.matchdays.push(newMatchday(0));
   s.matchdays.forEach(md=>{
-    if(!md.id) md.id=uuid();
-    if(!Number.isInteger(md.rotationIndex)) md.rotationIndex=0;
-    if(!md.date) md.date=s.createdAt;
+    md.id=safeId(md.id);
+    md.rotationIndex=safeInt(md.rotationIndex, 0, 1e6, 0);
+    md.date=safeTs(md.date, s.createdAt);
     md.isDeleted=!!md.isDeleted;
+    md.deletedAt=safeTs(md.deletedAt, null);
     if(!Array.isArray(md.rounds)) md.rounds=[];
     md.rounds=md.rounds.filter(r=>r&&typeof r==="object");
     md.rounds.forEach(r=>{
-      if(!r.id) r.id=uuid();
-      r.teamAPoints=+r.teamAPoints||0; r.teamBPoints=+r.teamBPoints||0;
-      if(!Array.isArray(r.hands)) r.hands=[];
+      r.id=safeId(r.id);
+      r.teamAPoints=safeInt(+r.teamAPoints, 0, 9999, 0); r.teamBPoints=safeInt(+r.teamBPoints, 0, 9999, 0);
+      r.hands=Array.isArray(r.hands) ? r.hands.filter(h=>h&&typeof h==="object") : [];
       if(r.winnerTeam!==0 && r.winnerTeam!==1) r.winnerTeam=null;
       r.isDeleted=!!r.isDeleted;
-      if(!r.startedAt) r.startedAt=md.date;
+      r.startedAt=safeTs(r.startedAt, md.date);
+      r.endedAt=safeTs(r.endedAt, null);
+      r.deletedAt=safeTs(r.deletedAt, null);
+      if(r.schneider) r.schneider=true; else delete r.schneider;
+      if(r.closed) r.closed=true; else delete r.closed;
+      if(r.teams && isTeamIdx(r.teams.teamA) && isTeamIdx(r.teams.teamB)) r.teams={teamA:r.teams.teamA.slice(), teamB:r.teams.teamB.slice()};
+      else delete r.teams;
     });
     // Ältere Versionen kannten keine Teams pro Spieltag → so einfrieren, wie sie bisher angezeigt wurden
-    if(!(md.teams && isTeamIdx(md.teams.teamA) && isTeamIdx(md.teams.teamB))){
+    if(md.teams && isTeamIdx(md.teams.teamA) && isTeamIdx(md.teams.teamB)){
+      md.teams=makeTeams(md.teams.teamA, md.teams.teamB, cleanStr(md.teams.nameA,MAXLEN.team), cleanStr(md.teams.nameB,MAXLEN.team));
+    }else{
       md.teams = (s.customTeamA && s.customTeamB)
         ? makeTeams(s.customTeamA, s.customTeamB, s.customTeamNameA, s.customTeamNameB)
         : (d=>makeTeams(d.teamA,d.teamB))(defaultTeams(md.rotationIndex));
@@ -201,6 +231,11 @@ function normalizeSession(s){
     cur.rounds.push(newRound()); s.tricksA=0; s.tricksB=0; s.currentBid=2;
   }
   return s;
+}
+
+// Wie normalizeSession, aber ein einzelner kaputter Eintrag reißt nie alle anderen mit
+function safeNormalize(s){
+  try{ return normalizeSession(s); }catch(e){ console.warn("Eintrag übersprungen", e); return null; }
 }
 
 // Zeitpunkt der letzten Änderung – für das Zusammenführen von Backups
@@ -234,15 +269,24 @@ function mergeSessions(local, incoming){
 // Persistence
 // ─────────────────────────────────────────────────────────────
 const STORE_KEY = "watten_store_v3";
+let loadWarning=null;
 function loadStore(){
+  let raw=null;
   try{
-    const raw = localStorage.getItem(STORE_KEY);
+    raw = localStorage.getItem(STORE_KEY);
     if(!raw) return {sessions:[]};
     const s = JSON.parse(raw);
-    if(!s || !Array.isArray(s.sessions)) return {sessions:[]};
-    s.sessions = s.sessions.map(normalizeSession).filter(Boolean);
-    return s;
-  }catch(e){ return {sessions:[]}; }
+    if(!s || !Array.isArray(s.sessions)) throw new Error("unerwartetes Format");
+    return {sessions: s.sessions.map(safeNormalize).filter(Boolean)};
+  }catch(e){
+    // Unlesbarer Speicher: Rohdaten beiseitelegen, statt sie beim nächsten Speichern
+    // kommentarlos mit einem leeren Stand zu überschreiben.
+    if(raw){
+      try{ localStorage.setItem(STORE_KEY+"_defekt", raw); }catch(_){}
+      loadWarning="Gespeicherte Daten waren unlesbar und wurden beiseitegelegt.";
+    }
+    return {sessions:[]};
+  }
 }
 function saveStore(){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); return true; }
@@ -261,7 +305,6 @@ function saveStore(){
 // ─────────────────────────────────────────────────────────────
 // Game logic – arbeitet direkt auf einer Session
 // ─────────────────────────────────────────────────────────────
-const UNDO_MAX = 30;
 const Game = {
   lastRoundEvent: null,
   currentMatchday: (s)=> s.matchdays[s.currentMatchdayIndex],
@@ -346,11 +389,15 @@ const Game = {
   },
   undo:(s)=>{
     const snap=s.undoStack.pop(); if(!snap) return;
-    if(snap.matchdays) s.matchdays=snap.matchdays;          // altes Format (komplette Kopie)
-    else{
+    if(Array.isArray(snap.matchdays) && snap.matchdays.length) s.matchdays=snap.matchdays;   // altes Format (komplette Kopie)
+    else if(snap.mds && typeof snap.mds==="object" && Number.isInteger(snap.mdCount) && snap.mdCount>=1){
       s.matchdays.length=Math.min(s.matchdays.length, snap.mdCount);
-      for(const k in snap.mds) s.matchdays[+k]=snap.mds[k];
+      for(const k of Object.keys(snap.mds)){
+        const i=Number(k);
+        if(Number.isInteger(i) && i>=0 && i<s.matchdays.length) s.matchdays[i]=snap.mds[k];
+      }
     }
+    else return;                                              // unbrauchbarer Eintrag → ignorieren
     s.currentMatchdayIndex=snap.currentMatchdayIndex;
     s.tricksA=snap.tricksA; s.tricksB=snap.tricksB; s.currentBid=snap.currentBid;
     s.customTeamA=snap.customTeamA; s.customTeamB=snap.customTeamB;
@@ -418,7 +465,7 @@ const Game = {
     // Manuell beendete Runden: endedAt bleibt null → zählen nicht in die Ø-Rundendauer
     if(w===0) md.teamARoundsWon+=roundWorth(r); else md.teamBRoundsWon+=roundWorth(r);
     Haptics.success();
-    Game.lastRoundEvent={winner:w, schneider:!!r.schneider};
+    Game.lastRoundEvent={winner:w, schneider:!!r.schneider, a:r.teamAPoints, b:r.teamBPoints};
     Game.startNewRound(s);
   },
   increaseBid:(s)=>{
@@ -555,13 +602,13 @@ function renderScreen(){
 
 // ── HOME ──
 function renderHome(){
-  const sessions = store.sessions;
+  const sessions = store.sessions.slice().sort((a,b)=>sessionUpdatedAt(b)-sessionUpdatedAt(a)); // zuletzt gespielt zuerst
   let body;
   if(sessions.length===0){
     body = `<div class="empty">
       <div class="big">${IC.club}</div>
       <h2>Noch kein Spiel</h2>
-      <p>Tippe auf + um ein neues Spiel zu starten.</p>
+      <p>Lege ein Spiel an, trag die vier Spieler ein und zähl los.</p>
       <button class="btn-primary" data-act="new">${IC.plus}<span>Neues Spiel</span></button>
     </div>`;
   } else {
@@ -608,18 +655,17 @@ function sessionCard(s){
   const nameA = Game.teamAName(s), nameB = Game.teamBName(s);
   const md=Game.currentMatchday(s);
   const ar=md.rounds.filter(r=>!r.isDeleted).length;
-  return `<button class="sess-card" data-sess="${s.id}">
-    <div class="ctx-del" data-del="${s.id}">${IC.trash}</div>
+  return `<button class="sess-card" data-sess="${esc(s.id)}" aria-label="${esc(s.name)} öffnen">
+    <div class="ctx-del" data-del="${esc(s.id)}">${IC.trash}</div>
     <div class="sc-top">
       <div class="sc-name">${esc(s.name)}</div>
       <div class="sc-date">${fmt.dateShort(s.createdAt)}</div>
     </div>
     <div class="variant-badge">${esc(VARIANTS[s.variant].name)}</div>
     <hr class="divider">
-    <div class="sc-vs">
-      <div class="sc-side"><div class="sc-team a">${esc(nameA)}</div><div class="sc-score">${totalA}</div></div>
-      <div class="sc-mid">vs</div>
-      <div class="sc-side r"><div class="sc-team b">${esc(nameB)}</div><div class="sc-score">${totalB}</div></div>
+    <div class="sc-rows">
+      <div class="sc-row"><span class="sc-team a">${esc(nameA)}</span><span class="sc-score">${totalA}</span></div>
+      <div class="sc-row"><span class="sc-team b">${esc(nameB)}</span><span class="sc-score">${totalB}</span></div>
     </div>
     <div class="sc-foot">Spieltag ${s.currentMatchdayIndex+1} · ${roundLabel(ar)}</div>
   </button>`;
@@ -628,7 +674,7 @@ function sessionCard(s){
 // ── GAME ──
 function renderGame(){
   const s=currentSession();
-  if(!s){ view.screen="home"; return renderHome(); }
+  if(!s) return leaveGame();
   const streak=Game.currentStreak(s);
   const over=Game.isRoundOver(s);
   const r=Game.currentRound(s);
@@ -643,8 +689,7 @@ function renderGame(){
       <div class="tn">${esc(name)}</div>
       <div class="pts">${pts}</div>
       <div class="progress"><span style="width:${(frac*100).toFixed(1)}%"></span></div>
-      <div class="tgt">/ ${tgt}</div>
-      ${gestrichen?`<div class="gestrichen">Gestrichen</div>`:''}
+      <div class="tgt">${gestrichen?`<span class="gestrichen">Gestrichen</span>`:`/ ${tgt}`}</div>
       <div class="rdots">${dots}</div>
       <div class="rwon">${roundLabel(won)}</div>
     </div>`;
@@ -663,8 +708,8 @@ function renderGame(){
   const canFold=!over && s.currentBid>2;
   const foldRow = canFold ? `
       <div class="fold-row">
-        <button class="fold-btn a" data-fold="0"><span class="fg">Geht</span><span class="fn">${esc(tA)}</span></button>
-        <button class="fold-btn b" data-fold="1"><span class="fg">Geht</span><span class="fn">${esc(tB)}</span></button>
+        <button class="fold-btn a" data-fold="0" aria-label="${esc(tA)} geht"><span class="fg">Geht</span><span class="fn">${esc(tA)}</span></button>
+        <button class="fold-btn b" data-fold="1" aria-label="${esc(tB)} geht"><span class="fg">Geht</span><span class="fn">${esc(tB)}</span></button>
       </div>
       <div class="fold-hint">Gehen → Gegner bekommt ${s.currentBid-1} ${s.currentBid-1===1?'Punkt':'Punkte'}</div>` : '';
   const handPanel = quick ? `
@@ -692,15 +737,15 @@ function renderGame(){
   const winButtons = quick ? `
     <div>
       <div class="row2">
-        <button class="bigbtn btn-a" data-win="0"><span class="ic">${IC.plus}</span>${s.currentBid} Punkte</button>
-        <button class="bigbtn btn-b" data-win="1"><span class="ic">${IC.plus}</span>${s.currentBid} Punkte</button>
+        <button class="bigbtn btn-a" data-win="0" aria-label="${s.currentBid} Punkte für ${esc(tA)}"><span class="ic">${IC.plus}</span>${s.currentBid} Punkte</button>
+        <button class="bigbtn btn-b" data-win="1" aria-label="${s.currentBid} Punkte für ${esc(tB)}"><span class="ic">${IC.plus}</span>${s.currentBid} Punkte</button>
       </div>
       <div class="trick-labels"><span class="a">${esc(tA)}</span><span class="b">${esc(tB)}</span></div>
     </div>` : `
     <div>
       <div class="row2">
-        <button class="bigbtn btn-a" data-trick="0"><span class="ic">${IC.hand}</span>+ Stich</button>
-        <button class="bigbtn btn-b" data-trick="1"><span class="ic">${IC.hand}</span>+ Stich</button>
+        <button class="bigbtn btn-a" data-trick="0" aria-label="Stich für ${esc(tA)}"><span class="ic">${IC.hand}</span>+ Stich</button>
+        <button class="bigbtn btn-b" data-trick="1" aria-label="Stich für ${esc(tB)}"><span class="ic">${IC.hand}</span>+ Stich</button>
       </div>
       <div class="trick-labels"><span class="a">${esc(tA)}</span><span class="b">${esc(tB)}</span></div>
     </div>`;
@@ -712,8 +757,8 @@ function renderGame(){
     </button>
     <div class="title">${esc(s.name)}</div>
     <div class="tb-actions">
-      <button class="iconbtn ${canUndo?'':'muted'}" data-open="undo" aria-label="Verlauf">${IC.history}</button>
-      <button class="iconbtn" data-open="teams" aria-label="Teams">${IC.shuffle}</button>
+      <button class="iconbtn ${canUndo?'':'muted'}" data-open="undo" aria-label="Verlauf der Aktionen">${IC.history}</button>
+      <button class="iconbtn" data-open="teams" aria-label="Teams einstellen">${IC.shuffle}</button>
       <button class="iconbtn" data-open="stats" aria-label="Statistik">${IC.chart}</button>
       <button class="iconbtn muted" data-open="settings" aria-label="Einstellungen">${IC.gear}</button>
     </div>
@@ -751,16 +796,16 @@ function renderGame(){
 
     <hr class="divider">
     <div class="row2">
-      <button class="bigbtn btn-border" data-next><span class="ic">${IC.arrowRight}</span>Nächste Runde</button>
+      <button class="bigbtn btn-border ${Game.canEndRound(s)?'':'dim'}" data-next><span class="ic">${IC.arrowRight}</span>Runde beenden</button>
       <button class="bigbtn btn-danger" data-newmd><span class="ic">${IC.flag}</span>Neuer Spieltag</button>
     </div>
   </div></div>`;
 
-  $('[data-back]',app).onclick=()=>{ view.screen="home"; releaseWakeLock(); renderHome(); };
+  $('[data-back]',app).onclick=leaveGame;
   const act=(fn)=>{
     Game.lastRoundEvent=null; fn(); commit();
     const ev=Game.lastRoundEvent; Game.lastRoundEvent=null;
-    if(ev && ev.schneider) toast(`Gschneidert! ${ev.winner===0?tA:tB} bekommt 2 Runden`);
+    if(ev) toastRoundWon(ev,tA,tB);
   };
   app.querySelectorAll('[data-trick]').forEach(b=>b.onclick=()=>act(()=>Game.addTrick(s,+b.dataset.trick)));
   app.querySelectorAll('[data-win]').forEach(b=>b.onclick=()=>act(()=>Game.winHand(s,+b.dataset.win)));
@@ -773,12 +818,26 @@ function renderGame(){
   app.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openSheet(b.dataset.open,s));
 }
 
+function toastRoundWon(ev,tA,tB){
+  const name=ev.winner===0?tA:tB;
+  toast(ev.schneider ? `Gschneidert! ${name} gewinnt ${ev.a}:${ev.b} – zählt 2 Runden`
+                     : `${name} gewinnt die Runde ${ev.a}:${ev.b}`);
+}
 function openSession(id){
   const s=store.sessions.find(x=>x.id===id);
   // Sicherung wie Swift ensureRound(): aktueller Spieltag hat immer >=1 Runde
   if(s){ const md=Game.currentMatchday(s);
     if(md && md.rounds.length===0){ md.rounds.push(newRound()); saveStore(); } }
+  if(!s) return;
   view.sessionId=id; view.screen="game"; renderGame(); requestWakeLock();
+  window.scrollTo(0,0);
+  if(!gameNav) gameNav=Nav.push(()=>{ gameNav=null; showHome(); });
+}
+let gameNav=null;
+function showHome(){ view.screen="home"; releaseWakeLock(); renderHome(); window.scrollTo(0,0); }
+function leaveGame(){
+  if(gameNav){ const e=gameNav; gameNav=null; Nav.drop(e); }
+  showHome();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -805,11 +864,51 @@ document.addEventListener('visibilitychange',()=>{
 // ─────────────────────────────────────────────────────────────
 const modalRoot=$("#modal-root");
 
-function sheetShell({title, lead, trail, body, wide}){
+// Zurück-Navigation: Android-Zurück-Taste, Wischgeste und Esc schließen erst
+// Dialog/Sheet, dann das Spiel – statt die App zu verlassen.
+// Muster: EIN "Wächter"-Eintrag in der History, solange etwas offen ist. Drückt
+// der Nutzer Zurück, verbraucht das den Wächter (popstate) → oberste Ebene
+// schließen und, falls noch etwas offen ist, den Wächter neu setzen. Es wird
+// bewusst nie programmatisch history.back() aufgerufen: das läuft asynchron und
+// kollidiert mit direkt folgenden pushState-Aufrufen (Sheet zu → Spiel auf).
+const Nav={
+  stack:[],
+  guard: !!(history.state && history.state.watten),
+  arm(){
+    if(this.guard) return;
+    try{ history.pushState({watten:1}, ""); this.guard=true; }catch(_){}
+  },
+  push(closeFn, modal){
+    const e={closeFn, modal:!!modal}; this.stack.push(e); this.arm(); return e;
+  },
+  drop(e){ const i=this.stack.indexOf(e); if(i>=0) this.stack.splice(i,1); },
+  closeTop(){ const e=this.stack.pop(); if(e) e.closeFn(); },
+};
+window.addEventListener('popstate',()=>{
+  Nav.guard=false;
+  Nav.closeTop();
+  if(Nav.stack.length) Nav.arm();
+});
+document.addEventListener('keydown',(e)=>{
+  if(e.key!=='Escape') return;
+  const top=Nav.stack[Nav.stack.length-1];
+  if(top && top.modal){ e.preventDefault(); Nav.closeTop(); }
+});
+
+// Hintergrund nicht mitscrollen lassen, solange ein Sheet/Dialog offen ist
+let modalCount=0;
+function lockScroll(on){
+  modalCount=Math.max(0, modalCount+(on?1:-1));
+  document.body.classList.toggle('modal-open', modalCount>0);
+}
+
+// Sheet im iOS-Stil. onDismiss wird aufgerufen, wenn das Sheet "weggewischt"
+// wird (Hintergrund-Tipp, Herunterziehen, Zurück) – nicht bei close().
+function sheetShell({title, lead, trail, body, wide, onDismiss}){
   const el=document.createElement('div');
   el.innerHTML=`
   <div class="sheet-back"></div>
-  <div class="sheet" role="dialog" aria-modal="true">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
     <div class="sheet-bar"><div class="grip"></div>
       <div class="sheet-lead">${lead||''}</div>
       <div class="sheet-title">${esc(title)}</div>
@@ -817,12 +916,37 @@ function sheetShell({title, lead, trail, body, wide}){
     </div>
     <div class="sheet-body ${wide?'wide':''}">${body}</div>
   </div>`;
-  modalRoot.appendChild(el);
-  const back=$('.sheet-back',el), sheet=$('.sheet',el);
+  modalRoot.appendChild(el); lockScroll(true);
+  const back=$('.sheet-back',el), sheet=$('.sheet',el), bar=$('.sheet-bar',el);
   requestAnimationFrame(()=>{ back.classList.add('open'); sheet.classList.add('open'); });
-  const close=()=>{ back.classList.remove('open'); sheet.classList.remove('open');
-    setTimeout(()=>el.remove(),280); };
-  back.onclick=close;
+  let closed=false;
+  const finish=()=>{
+    if(closed) return false; closed=true;
+    if(document.activeElement && el.contains(document.activeElement)) document.activeElement.blur(); // Tastatur einfahren
+    back.classList.remove('open'); sheet.classList.remove('open'); sheet.style.transform='';
+    setTimeout(()=>{ el.remove(); lockScroll(false); },280);
+    return true;
+  };
+  const nav=Nav.push(()=>{ if(closed) return; if(onDismiss) onDismiss(); finish(); }, true);
+  const close=()=>{ if(finish()) Nav.drop(nav); };
+  const dismiss=()=>{ if(closed) return; if(onDismiss) onDismiss(); close(); };
+  back.onclick=dismiss;
+
+  // Am Kopf herunterziehen zum Schließen
+  let y0=null, dy=0;
+  bar.addEventListener('touchstart',(e)=>{
+    if(e.target.closest('button')) return;
+    y0=e.touches[0].clientY; dy=0; sheet.style.transition='none';
+  },{passive:true});
+  bar.addEventListener('touchmove',(e)=>{
+    if(y0===null) return;
+    dy=Math.max(0, e.touches[0].clientY-y0); sheet.style.transform=`translateY(${dy}px)`;
+  },{passive:true});
+  const endDrag=()=>{
+    if(y0===null) return; y0=null; sheet.style.transition='';
+    if(dy>110) dismiss(); else sheet.style.transform='';
+  };
+  bar.addEventListener('touchend',endDrag); bar.addEventListener('touchcancel',endDrag);
   return {el, close};
 }
 
@@ -833,36 +957,59 @@ function openSheet(kind,s){
   if(kind==="undo")     return openUndo(s);
 }
 
-// ── New game ──
-function modeOpts(quick){
-  return [[false,"Mit Stichen","Stiche zählen · Spiel endet bei 3 Stichen"],
-          [true,"Schnellmodus","Ohne Stiche · Spiel mit Gebot direkt einem Team geben"]]
-    .map(([q,n,d])=>`<button class="variant-opt ${q===quick?'sel':''}" data-q="${q?1:0}">
-      <div class="vo-txt"><div class="vo-name">${n}</div><div class="vo-desc">${d}</div></div>
-      ${q===quick?`<span class="vo-check">${IC.check}</span>`:''}
-    </button>`).join("");
-}
-function openNewGame(){
-  let name="", variant="ladinisch", quick=false;
-  const variantOpts=()=>VARIANT_ORDER.map(k=>{
+// ── Formular-Bausteine ──
+function variantOptsHtml(variant){
+  return VARIANT_ORDER.map(k=>{
     const v=VARIANTS[k];
-    return `<button class="variant-opt ${k===variant?'sel':''}" data-v="${k}">
+    return `<button type="button" class="variant-opt ${k===variant?'sel':''}" data-v="${k}" role="radio" aria-checked="${k===variant}">
       <div class="vo-txt"><div class="vo-name">${esc(v.name)}</div><div class="vo-desc">${esc(v.desc)}</div></div>
       ${k===variant?`<span class="vo-check">${IC.check}</span>`:''}
     </button>`;
   }).join("");
+}
+// Schalter im iOS-Stil (Toggle) für die Zählweise
+function quickToggleHtml(id, on){
+  return `<label class="toggle-row" for="${id}">
+      <span class="tr-txt"><span class="tr-title">Schnellmodus</span>
+        <span class="tr-sub">Ohne Stiche – das Spiel wird mit dem aktuellen Gebot direkt einem Team gegeben.</span></span>
+      <input type="checkbox" class="switch" id="${id}" role="switch" ${on?'checked':''}>
+    </label>`;
+}
+function playerRowsHtml(names){
+  return names.map((n,i)=>`
+    <div class="name-row"><span class="num">${i+1}.</span>
+      <input data-name="${i}" value="${esc(n)}" placeholder="Spieler ${i+1}" maxlength="${MAXLEN.player}"
+        autocomplete="off" autocapitalize="words" enterkeyhint="${i<3?'next':'done'}" aria-label="Name Spieler ${i+1}"></div>`).join("");
+}
+// Enter springt zum nächsten Feld bzw. führt beim letzten die Hauptaktion aus
+function chainInputs(inputs, onDone){
+  inputs.forEach((inp,i)=>inp.addEventListener('keydown',(e)=>{
+    if(e.key!=='Enter') return; e.preventDefault();
+    if(i<inputs.length-1) inputs[i+1].focus(); else { inp.blur(); onDone&&onDone(); }
+  }));
+}
+
+// ── New game ──
+function openNewGame(){
+  let variant="ladinisch";
+  const names=["","","",""];
   const body=`
     <div class="section">
       <p class="field-lbl">Spielname</p>
-      <input class="txtfield" id="ng-name" placeholder="z.B. Stammtisch Freitag" autocomplete="off">
+      <input class="txtfield" id="ng-name" placeholder="z.B. Stammtisch Mittwoch" maxlength="${MAXLEN.session}" autocomplete="off" enterkeyhint="next" aria-label="Spielname">
+    </div>
+    <div class="section">
+      <p class="field-lbl">Spieler</p>
+      <div id="ng-names">${playerRowsHtml(names)}</div>
+      <p class="hint">Die Teams rotieren pro Spieltag automatisch: 1 &amp; 2, dann 1 &amp; 3, dann 1 &amp; 4. Eigene Teams lassen sich im Spiel jederzeit festlegen.</p>
     </div>
     <div class="section">
       <p class="field-lbl">Spielvariante</p>
-      <div id="ng-variants">${variantOpts()}</div>
+      <div id="ng-variants" role="radiogroup" aria-label="Spielvariante">${variantOptsHtml(variant)}</div>
     </div>
     <div class="section">
       <p class="field-lbl">Zählweise</p>
-      <div id="ng-mode">${modeOpts(quick)}</div>
+      ${quickToggleHtml("ng-quick", false)}
     </div>`;
   const {el,close}=sheetShell({
     title:"Neues Spiel",
@@ -871,73 +1018,63 @@ function openNewGame(){
     body,
   });
   const nameInput=$('#ng-name',el);
-  nameInput.oninput=e=>name=e.target.value;
   const rewire=()=>$('#ng-variants',el).querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{
-    variant=b.dataset.v; $('#ng-variants',el).innerHTML=variantOpts(); rewire(); });
+    variant=b.dataset.v; $('#ng-variants',el).innerHTML=variantOptsHtml(variant); rewire(); });
   rewire();
-  const rewireM=()=>$('#ng-mode',el).querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{
-    quick=b.dataset.q==="1"; $('#ng-mode',el).innerHTML=modeOpts(quick); rewireM(); });
-  rewireM();
-  $('#ng-cancel',el).onclick=close;
-  $('#ng-create',el).onclick=()=>{
-    const nm = name.trim()||`Spiel ${store.sessions.length+1}`;
-    const s=newSession(nm,variant,quick);
+  const nameInputs=[...$('#ng-names',el).querySelectorAll('[data-name]')];
+  nameInputs.forEach(inp=>inp.oninput=()=>names[+inp.dataset.name]=inp.value);
+  const create=()=>{
+    const nm = cleanStr(nameInput.value, MAXLEN.session) || `Spiel ${store.sessions.length+1}`;
+    const s=newSession(nm, variant, $('#ng-quick',el).checked, names);
     store.sessions.push(s); saveStore(); scheduleSync();
     close(); openSession(s.id);
   };
+  chainInputs([nameInput, ...nameInputs], create);
+  $('#ng-cancel',el).onclick=close;
+  $('#ng-create',el).onclick=create;
 }
 
 // ── Settings ──
 function openSettings(s){
   let names=s.players.map(p=>p.name);
-  let sessionName=s.name, variant=s.variant, target=s.targetPoints, quick=!!s.quickMode;
-  const variantOpts=()=>VARIANT_ORDER.map(k=>{
-    const v=VARIANTS[k];
-    return `<button class="variant-opt ${k===variant?'sel':''}" data-v="${k}">
-      <div class="vo-txt"><div class="vo-name">${esc(v.name)}</div><div class="vo-desc">${esc(v.desc)}</div></div>
-      ${k===variant?`<span class="vo-check">${IC.check}</span>`:''}
-    </button>`;
-  }).join("");
-  const nameRows=()=>names.map((n,i)=>`
-    <div class="name-row"><span class="num">${i+1}.</span>
-      <input data-name="${i}" value="${esc(n)}" placeholder="Spieler ${i+1}" autocomplete="off"></div>`).join("");
+  let variant=s.variant, target=s.targetPoints;
   const body=`
     <div class="section"><p class="field-lbl">Spielname</p>
-      <input class="txtfield" id="st-name" value="${esc(sessionName)}"></div>
-    <div class="section"><p class="field-lbl">Spielvariante</p><div id="st-variants">${variantOpts()}</div></div>
+      <input class="txtfield" id="st-name" value="${esc(s.name)}" maxlength="${MAXLEN.session}" autocomplete="off" enterkeyhint="done" aria-label="Spielname"></div>
+    <div class="section"><p class="field-lbl">Spielernamen</p><div id="st-names">${playerRowsHtml(names)}</div></div>
+    <div class="section"><p class="field-lbl">Spielvariante</p><div id="st-variants" role="radiogroup" aria-label="Spielvariante">${variantOptsHtml(variant)}</div></div>
     <div class="section"><p class="field-lbl">Zielpunkte</p>
       <div class="stepper"><span class="val" id="st-target">Bis ${target} Punkte</span>
-        <div class="ctrls"><button id="st-minus">−</button><span class="sepv"></span><button id="st-plus">+</button></div></div>
+        <div class="ctrls"><button type="button" id="st-minus" aria-label="Weniger Punkte">−</button><span class="sepv"></span><button type="button" id="st-plus" aria-label="Mehr Punkte">+</button></div></div>
       <p class="hint" id="st-hint">Standard für ${esc(VARIANTS[variant].name)}: ${VARIANTS[variant].defaultTarget} Punkte</p>
     </div>
-    <div class="section"><p class="field-lbl">Zählweise</p><div id="st-mode">${modeOpts(quick)}</div></div>
-    <div class="section"><p class="field-lbl">Spielernamen</p><div id="st-names">${nameRows()}</div></div>`;
-  const {el,close}=sheetShell({ title:"Einstellungen", trail:`<button id="st-done">Fertig</button>`, body });
+    <div class="section"><p class="field-lbl">Zählweise</p>${quickToggleHtml("st-quick", !!s.quickMode)}</div>
+    <div class="section"><button type="button" class="destructive-row" id="st-delete">${IC.trash}Spiel löschen</button></div>`;
+  // Wie ein SwiftUI-Formular: Änderungen gelten auch beim Wegwischen, nicht nur über "Fertig"
+  const save=()=>{
+    Game.lastRoundEvent=null;
+    const changed=Game.applySettings(s,{name:$('#st-name',el).value, variant, target, quick:$('#st-quick',el).checked, names});
+    if(changed) commit();
+    const ev=Game.lastRoundEvent; Game.lastRoundEvent=null;
+    if(ev) toast(`${ev.winner===0?Game.teamAName(s):Game.teamBName(s)} hat das neue Ziel erreicht und gewinnt die Runde`);
+  };
+  const {el,close}=sheetShell({ title:"Einstellungen", trail:`<button id="st-done">Fertig</button>`, body, onDismiss:save });
 
-  $('#st-name',el).oninput=e=>sessionName=e.target.value;
+  const showTarget=()=>{ $('#st-target',el).textContent=`Bis ${target} Punkte`; };
   const rewireV=()=>$('#st-variants',el).querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{
+    if(b.dataset.v===variant) return;
     variant=b.dataset.v; target=VARIANTS[variant].defaultTarget;
-    $('#st-variants',el).innerHTML=variantOpts(); rewireV();
-    $('#st-target',el).textContent=`Bis ${target} Punkte`;
+    $('#st-variants',el).innerHTML=variantOptsHtml(variant); rewireV(); showTarget();
     $('#st-hint',el).textContent=`Standard für ${VARIANTS[variant].name}: ${VARIANTS[variant].defaultTarget} Punkte`;
   });
   rewireV();
-  const rewireM=()=>$('#st-mode',el).querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{
-    quick=b.dataset.q==="1"; $('#st-mode',el).innerHTML=modeOpts(quick); rewireM(); });
-  rewireM();
-  const setT=(d)=>{ target=Math.min(30,Math.max(5,target+d)); $('#st-target',el).textContent=`Bis ${target} Punkte`; };
+  const setT=(d)=>{ target=Math.min(30,Math.max(5,target+d)); showTarget(); Haptics.light(); };
   $('#st-minus',el).onclick=()=>setT(-1); $('#st-plus',el).onclick=()=>setT(1);
-  const bindNames=()=>$('#st-names',el).querySelectorAll('[data-name]').forEach(inp=>{
-    inp.oninput=e=>names[+inp.dataset.name]=e.target.value; });
-  bindNames();
-  $('#st-done',el).onclick=()=>{
-    Game.lastRoundEvent=null;
-    const changed=Game.applySettings(s,{name:sessionName, variant, target, quick, names});
-    close();
-    if(changed) commit();
-    const ev=Game.lastRoundEvent; Game.lastRoundEvent=null;
-    if(ev) toast(`${ev.winner===0?Game.teamAName(s):Game.teamBName(s)} hat das neue Ziel erreicht`);
-  };
+  const nameInputs=[...$('#st-names',el).querySelectorAll('[data-name]')];
+  nameInputs.forEach(inp=>inp.oninput=()=>names[+inp.dataset.name]=inp.value);
+  chainInputs(nameInputs);
+  $('#st-done',el).onclick=()=>{ save(); close(); };
+  $('#st-delete',el).onclick=()=>confirmDeleteSession(s.id, close);
 }
 
 // ── Team setup ──
@@ -949,7 +1086,7 @@ function openTeams(s){
     const rows=team.map(idx=>`
       <div class="player-row ${side}"><span class="pi">${IC.person}</span>
         <span class="pn">${esc(s.players[idx].name)}</span>
-        <button class="swap" data-swap="${idx}" data-side="${side}">${IC.swap}</button></div>`).join("");
+        <button class="swap" data-swap="${idx}" data-side="${side}" aria-label="${esc(s.players[idx].name)} ins andere Team">${IC.swap}</button></div>`).join("");
     return `<div class="team-edit ${side}"><div class="te-lbl">${side==='a'?'Team A':'Team B'}</div>${rows}</div>`;
   };
   const renderEditors=()=>editor('a',teamA,teamB)+editor('b',teamB,teamA);
@@ -958,11 +1095,11 @@ function openTeams(s){
     <div id="te-editors">${renderEditors()}</div>
     <div class="section" style="margin-top:0"><p class="field-lbl">Teamnamen (optional)</p>
       <div class="names2">
-        <input class="a" id="te-nameA" value="${esc(nameA)}" placeholder="Team A">
-        <input class="b" id="te-nameB" value="${esc(nameB)}" placeholder="Team B"></div></div>
+        <input class="a" id="te-nameA" value="${esc(nameA)}" placeholder="Team A" maxlength="${MAXLEN.team}" autocomplete="off" aria-label="Name Team A">
+        <input class="b" id="te-nameB" value="${esc(nameB)}" placeholder="Team B" maxlength="${MAXLEN.team}" autocomplete="off" aria-label="Name Team B"></div></div>
     <button class="dice-btn" id="te-dice">${IC.dice}Zufällig auswürfeln</button>`;
   const {el,close}=sheetShell({
-    title:"Teams einstellen", wide:true,
+    title:"Teams", wide:true,
     lead:`<button id="te-cancel">Abbrechen</button>`,
     trail:`<button id="te-apply">Übernehmen</button>`, body,
   });
@@ -1004,12 +1141,12 @@ function openUndo(s){
     ? `<div class="empty-mini"><span class="big">${IC.clock}</span><span>Keine Aktionen</span></div>`
     : `<div style="padding-top:8px">${hist.map((snap,idx)=>`
         <div class="undo-item">
-          <span class="ci" style="background:${undoColor[snap.action]}">${undoIcon[snap.action]}</span>
-          <div class="ut"><div class="u1">${esc(UNDO_LABEL[snap.action])}</div><div class="u2">${fmt.timeMedium(snap.timestamp)}</div></div>
+          <span class="ci" style="background:${undoColor[snap.action]||undoColor.other}">${undoIcon[snap.action]||undoIcon.other}</span>
+          <div class="ut"><div class="u1">${esc(UNDO_LABEL[snap.action]||UNDO_LABEL.other)}</div><div class="u2">${fmt.timeMedium(snap.timestamp)}</div></div>
           ${idx===0?'<span class="now">Aktuell</span>':''}
         </div>`).join("")}</div>`;
   const {el,close}=sheetShell({
-    title:"Verlauf / Undo",
+    title:"Verlauf",
     lead:`<button id="uh-close">Schließen</button>`,
     trail: Game.canUndo(s)?`<button id="uh-undo">Rückgängig</button>`:'',
     body,
@@ -1059,7 +1196,7 @@ function matchdayCard(s,idx,md){
       const crown = r.winnerTeam!==null ? `<span class="crown ${r.winnerTeam===0?'a':'b'}">${IC.crown}</span>${r.schneider?'<span class="schneider-badge">×2</span>':''}`
         : r.closed ? `<span class="muted-note">unentsch.</span>` : '';
       const delBtn = (r.winnerTeam!==null||r.teamAPoints>0||r.teamBPoints>0)
-        ? `<button class="trash-btn" data-delr="${r.id}" style="width:auto">${IC.trash}</button>`:'';
+        ? `<button class="trash-btn" data-delr="${esc(r.id)}" aria-label="Runde löschen">${IC.trash}</button>`:'';
       return `<div class="round-row">
         <div class="rinfo"><span class="rl">Runde ${rIdx+1}</span><div class="rt">${fmt.timeShort(r.startedAt)}</div>${dur}</div>
         <span class="pa">${r.teamAPoints}</span><span class="col">:</span><span class="pb">${r.teamBPoints}</span>${crown}${delBtn}
@@ -1068,7 +1205,7 @@ function matchdayCard(s,idx,md){
   }
   const head = md.isDeleted
     ? `<span class="del-badge">${IC.trash}Gelöscht${md.deletedAt?' · '+fmt.dateShort(md.deletedAt):''}</span>`
-    : `<span class="mdt">${fmt.dateMedium(md.date)}</span><button class="trash-btn" data-delmd="${md.id}">${IC.trash}</button>`;
+    : `<span class="mdt">${fmt.dateMedium(md.date)}</span><button class="trash-btn" data-delmd="${esc(md.id)}" aria-label="Spieltag löschen">${IC.trash}</button>`;
   const scoreBlock = md.isDeleted
     ? `<p class="muted-note">Dieser Spieltag wurde aus der Wertung entfernt.</p>`
     : `<div class="md-score">
@@ -1095,7 +1232,7 @@ function statsSummary(s){
   const splitbar = tot>0 ? `<div class="splitbar"><div class="a" style="width:${(totA/tot*100)}%"></div><div class="b"></div></div>`:'';
   const durLine = avgDur!=null ? `<div class="row-line"><span class="ri">${IC.clock}</span><span class="rt">Ø Rundendauer</span><span class="rv">${Math.floor(avgDur/60000)}min ${Math.floor(avgDur/1000)%60}s</span></div>`:'';
 
-  return `
+  return `<div class="stack">
   ${streakCard}
   <div class="panel"><div class="cardtitle">Team-Gesamtbilanz</div>
     <div style="display:flex;align-items:flex-end">
@@ -1130,7 +1267,7 @@ function statsSummary(s){
         </div>`;
       }).join("")}
     </div>
-  </div>`;
+  </div></div>`;
 }
 
 // ── Charts (SVG) ──
@@ -1153,7 +1290,7 @@ function barChart(s){
     const H=80, groupW=46, gap=8, W=days.length*groupW;
     const bars=days.map((m,i)=>{
       const x=i*groupW;
-      const ha=Math.max(4,H*m.teamARoundsWon/maxV), hb=Math.max(4,H*m.teamBRoundsWon/maxV);
+      const ha=Math.max(2,H*m.teamARoundsWon/maxV), hb=Math.max(2,H*m.teamBRoundsWon/maxV);
       return `<rect x="${x+3}" y="${H-ha}" width="18" height="${ha}" rx="4" fill="var(--teamA)"/>
               <rect x="${x+24}" y="${H-hb}" width="18" height="${hb}" rx="4" fill="var(--teamB)"/>
               <text x="${x+groupW/2}" y="${H+14}" fill="var(--muted)" font-size="10" text-anchor="middle">${i+1}</text>`;
@@ -1172,16 +1309,17 @@ function lineChart(s){
   const tA=Game.teamAName(s), tB=Game.teamBName(s);
   const d=cumulativePoints(s);
   const W=300,H=120;
-  const grid=[0.25,0.5,0.75,1.0].map(f=>`<line x1="0" y1="${H*(1-f)}" x2="${W}" y2="${H*(1-f)}" stroke="var(--border)" stroke-opacity="0.5" stroke-width="0.5"/>`).join("");
+  const P=6, iw=W-2*P, ih=H-2*P;   // Innenabstand, damit die Punkte am Rand nicht abgeschnitten werden
+  const grid=[0,0.25,0.5,0.75,1.0].map(f=>`<line x1="${P}" y1="${P+ih*(1-f)}" x2="${W-P}" y2="${P+ih*(1-f)}" stroke="var(--border)" stroke-opacity="0.5" stroke-width="0.5"/>`).join("");
   const poly=(pts,col)=>{
     const n=pts.length; if(n<2) return '';
-    const coords=pts.map((v,i)=>[W*i/(n-1), H*(1-v/d.maxV)]);
+    const coords=pts.map((v,i)=>[P+iw*i/(n-1), P+ih*(1-v/d.maxV)]);
     const path=coords.map((c,i)=>(i===0?'M':'L')+c[0].toFixed(1)+','+c[1].toFixed(1)).join(' ');
     const dots=coords.map(c=>`<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="3.5" fill="${col}"/>`).join('');
     return `<path d="${path}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>${dots}`;
   };
   return `<div class="panel"><div class="cardtitle" style="font-size:13px">Kumulierte Runden (Gesamt)</div>
-    <svg viewBox="0 0 ${W} ${H}" width="100%" height="120" preserveAspectRatio="none">${grid}${poly(d.a,COL.teamA)}${poly(d.b,COL.teamB)}</svg>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="120" preserveAspectRatio="none" role="img" aria-label="Kumulierte Runden pro Spieltag">${grid}${poly(d.a,COL.teamA)}${poly(d.b,COL.teamB)}</svg>
     ${legend(tA,tB)}</div>`;
 }
 function donutChart(s){
@@ -1224,23 +1362,33 @@ function donutChart(s){
 function alertDialog({title,message,confirmLabel,destructive,onConfirm,cancelLabel}){
   const el=document.createElement('div');
   el.className='alert-back';
-  el.innerHTML=`<div class="alert"><div class="at">${esc(title)}</div>
+  el.innerHTML=`<div class="alert" role="alertdialog" aria-modal="true" aria-label="${esc(title)}"><div class="at">${esc(title)}</div>
     ${message?`<div class="am">${esc(message)}</div>`:''}
     <div class="ab">
       <button class="cancel">${esc(cancelLabel||'Abbrechen')}</button>
       <button class="${destructive?'destructive':''} ok">${esc(confirmLabel)}</button>
     </div></div>`;
-  modalRoot.appendChild(el);
+  modalRoot.appendChild(el); lockScroll(true);
   requestAnimationFrame(()=>el.classList.add('open'));
-  const close=()=>{ el.classList.remove('open'); setTimeout(()=>el.remove(),200); };
+  let closed=false;
+  const finish=()=>{ if(closed) return false; closed=true;
+    el.classList.remove('open'); setTimeout(()=>{ el.remove(); lockScroll(false); },200); return true; };
+  const nav=Nav.push(finish, true);
+  const close=()=>{ if(finish()) Nav.drop(nav); };
   $('.cancel',el).onclick=close;
   $('.ok',el).onclick=()=>{ close(); onConfirm&&onConfirm(); };
   el.onclick=(e)=>{ if(e.target===el) close(); };
 }
-function confirmDeleteSession(id){
-  alertDialog({title:"Spiel löschen?", message:"Alle Daten dieses Spiels werden dauerhaft gelöscht.",
+function confirmDeleteSession(id, before){
+  const s=store.sessions.find(x=>x.id===id); if(!s) return;
+  alertDialog({title:`„${s.name}“ löschen?`, message:"Alle Spieltage und Runden dieses Spiels werden dauerhaft gelöscht. Das lässt sich nicht rückgängig machen.",
     confirmLabel:"Löschen", destructive:true, onConfirm:()=>{
-      store.sessions=store.sessions.filter(x=>x.id!==id); commit(); }});
+      before&&before();
+      store.sessions=store.sessions.filter(x=>x.id!==id);
+      if(view.screen==="game" && view.sessionId===id) leaveGame();
+      saveStore(); renderScreen(); scheduleSync();
+      toast("Spiel gelöscht");
+    }});
 }
 function confirmNextRound(s,tA,tB){
   if(!Game.canEndRound(s)){ toast("In dieser Runde gibt es noch keine Punkte"); return; }
@@ -1249,11 +1397,18 @@ function confirmNextRound(s,tA,tB){
     ? `Gleichstand ${r.teamAPoints}:${r.teamBPoints} – die Runde wird ohne Sieger beendet.`
     : `${r.teamAPoints>r.teamBPoints?tA:tB} führt ${Math.max(r.teamAPoints,r.teamBPoints)}:${Math.min(r.teamAPoints,r.teamBPoints)} und bekommt die Runde.`;
   alertDialog({title:"Runde vorzeitig beenden?", message:msg, confirmLabel:"Beenden",
-    onConfirm:()=>{ Game.nextRound(s); commit(); }});
+    onConfirm:()=>{
+      Game.lastRoundEvent=null; Game.nextRound(s); commit();
+      const ev=Game.lastRoundEvent; Game.lastRoundEvent=null;
+      if(ev) toastRoundWon(ev,tA,tB);
+    }});
 }
 function confirmNewMatchday(s){
   alertDialog({title:"Neuer Spieltag?", message:"Der aktuelle Spieltag wird abgeschlossen und ein neuer gestartet.",
-    confirmLabel:"Neuer Spieltag", destructive:true, onConfirm:()=>{ Game.nextMatchday(s); commit(); }});
+    confirmLabel:"Neuer Spieltag", onConfirm:()=>{
+      Game.nextMatchday(s); commit();
+      toast(`Spieltag ${Game.matchdayNumber(s)}: ${Game.teamAName(s)} gegen ${Game.teamBName(s)}`);
+    }});
 }
 function confirmDeleteMatchday(s,id,after){
   alertDialog({title:"Spieltag löschen?", message:"Spieltag wird als gelöscht markiert und aus der Wertung entfernt.",
@@ -1279,6 +1434,7 @@ async function shareSession(s){
 // Datensicherung: kompletter Export/Import (durable Aufzeichnung)
 // ─────────────────────────────────────────────────────────────
 const BACKUP_SCHEMA = "v3";
+const MAX_IMPORT_BYTES = 20*1024*1024, MAX_IMPORT_SESSIONS = 500;
 function pad2(n){ return String(n).padStart(2,"0"); }
 function stamp(){ const d=new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}`; }
 function downloadFile(name, text, mime){
@@ -1312,7 +1468,9 @@ function parseBackup(raw){
   const sessions = (data && data.store && Array.isArray(data.store.sessions)) ? data.store.sessions
                  : Array.isArray(data && data.sessions) ? data.sessions : null;
   if(!sessions) throw new Error("Kein gültiges Watten-Backup.");
-  return sessions.map(normalizeSession).filter(Boolean);
+  if(sessions.length>MAX_IMPORT_SESSIONS) throw new Error("Zu viele Spiele im Backup.");
+  // Undo-Verläufe fremder Geräte werden nicht übernommen (unnötig, und weniger ungeprüfte Daten)
+  return sessions.map(safeNormalize).filter(Boolean).map(s=>{ s.undoStack=[]; return s; });
 }
 function mergeToast(prefix,res){
   const parts=[];
@@ -1322,13 +1480,14 @@ function mergeToast(prefix,res){
   toast(`${prefix}: ${parts.join(", ")||"nichts zu tun"}`);
 }
 function importBackup(file, mode){ // mode: 'merge' | 'replace'
+  if(file.size>MAX_IMPORT_BYTES){ toast("Import fehlgeschlagen: Datei ist zu groß"); return; }
   const reader=new FileReader();
   reader.onload=()=>{
     try{
       const incoming=parseBackup(reader.result);
       if(mode==="replace"){ store.sessions=incoming; toast(`${incoming.length} Spiel(e) importiert`); }
       else { const m=mergeSessions(store.sessions,incoming); store.sessions=m.sessions; mergeToast("Import",m); }
-      view.screen="home"; commit();
+      saveStore(); renderScreen(); scheduleSync();
     }catch(e){ toast("Import fehlgeschlagen: "+e.message); }
   };
   reader.onerror=()=>toast("Datei konnte nicht gelesen werden");
@@ -1336,7 +1495,12 @@ function importBackup(file, mode){ // mode: 'merge' | 'replace'
 }
 // CSV: eine Zeile pro Runde über alle Spiele – gut für Tabellen/Obsidian
 function exportAllCSV(){
-  const csvEsc=(v)=>{ const t=String(v??""); return /[";\n]/.test(t) ? '"'+t.replace(/"/g,'""')+'"' : t; };
+  // Texte, die mit = + - @ beginnen, würde Excel als Formel ausführen → entschärfen
+  const csvEsc=(v)=>{
+    let t=String(v??"");
+    if(typeof v==="string" && /^[=+\-@\t\r]/.test(t)) t="'"+t;
+    return /[";\n\r]/.test(t) ? '"'+t.replace(/"/g,'""')+'"' : t;
+  };
   const rows=[["Spiel","Variante","Ziel","Spieltag","Datum","Runde","Startzeit","Endzeit","Dauer_s","PunkteA","PunkteB","Gewinner","TeamA","TeamB","Schneider","Geloescht"]];
   const iso=(ms)=> ms==null ? "" : new Date(ms).toISOString();
   for(const s of store.sessions){
@@ -1363,13 +1527,27 @@ function exportAllCSV(){
 // (z.B. DuckDNS+Caddy+watten-sync-server, siehe README). URL/Token liegen
 // getrennt vom Spielstand in localStorage, nicht Teil des store-Backups.
 const SYNC_KEY = "watten_sync_cfg";
+// Nur https (http ausschließlich für localhost) und keine Zugangsdaten in der URL –
+// sonst ginge der Token im Klartext über die Leitung.
+function validSyncUrl(u){
+  try{
+    const x=new URL(u);
+    if(x.username || x.password) return false;
+    return x.protocol==="https:" || (x.protocol==="http:" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(x.hostname));
+  }catch(e){ return false; }
+}
 function loadSyncCfg(){
-  try{ const c=JSON.parse(localStorage.getItem(SYNC_KEY)); return c&&typeof c==="object" ? c : {url:"",token:"",lastSync:null}; }
-  catch(e){ return {url:"",token:"",lastSync:null}; }
+  const empty={url:"",token:"",lastSync:null};
+  try{
+    const c=JSON.parse(localStorage.getItem(SYNC_KEY));
+    if(!c || typeof c!=="object") return empty;
+    return { url: typeof c.url==="string" ? c.url : "", token: typeof c.token==="string" ? c.token : "",
+             lastSync: safeTs(c.lastSync, null) };
+  }catch(e){ return empty; }
 }
 function saveSyncCfg(){ try{ localStorage.setItem(SYNC_KEY, JSON.stringify(syncCfg)); }catch(e){} }
 let syncCfg = loadSyncCfg();
-const syncConfigured = ()=> !!(syncCfg.url && syncCfg.token);
+const syncConfigured = ()=> !!(syncCfg.url && syncCfg.token && validSyncUrl(syncCfg.url));
 function syncEndpoint(path){ return syncCfg.url.replace(/\/+$/,"") + path; }
 
 let syncTimer=null, syncBusy=false, syncAgain=false;
@@ -1385,7 +1563,7 @@ async function syncPush(silent){
   const payload={ app:"watten-tracker", schema:BACKUP_SCHEMA, exportedAt:Date.now(), store };
   try{
     const res=await fetch(syncEndpoint("/backup"),{
-      method:"POST",
+      method:"POST", credentials:"omit", referrerPolicy:"no-referrer", cache:"no-store",
       headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+syncCfg.token },
       body: JSON.stringify(payload)
     });
@@ -1404,61 +1582,69 @@ async function syncPush(silent){
 async function syncPull(){
   if(!syncConfigured()) return toast("Sync nicht konfiguriert");
   try{
-    const res=await fetch(syncEndpoint("/backup"),{ headers:{ "Authorization":"Bearer "+syncCfg.token } });
+    const res=await fetch(syncEndpoint("/backup"),{ credentials:"omit", referrerPolicy:"no-referrer", cache:"no-store",
+      headers:{ "Authorization":"Bearer "+syncCfg.token } });
     if(!res.ok) throw new Error("HTTP "+res.status);
     const incoming=parseBackup(await res.text());
     const m=mergeSessions(store.sessions,incoming); store.sessions=m.sessions;
-    view.screen="home"; saveStore(); renderHome();
+    saveStore(); renderScreen();
     mergeToast("Vom Home-Lab",m);
   }catch(e){ toast("Laden fehlgeschlagen: "+e.message); }
 }
 function renderSyncStatus(err){
   const el=document.getElementById("sync-status");
   if(!el) return;
-  if(err){ el.textContent="⚠ Sync fehlgeschlagen: "+err; el.style.color="var(--danger)"; }
+  if(!syncConfigured()){ el.textContent="Nicht eingerichtet"; el.style.color="var(--muted)"; }
+  else if(err){ el.textContent="⚠ Sync fehlgeschlagen: "+err; el.style.color="var(--danger)"; }
   else if(syncCfg.lastSync){ el.textContent="Zuletzt gesynct: "+fmt.timeShort(syncCfg.lastSync); el.style.color="var(--streak)"; }
   else{ el.textContent="Noch nicht synchronisiert"; el.style.color="var(--muted)"; }
 }
 
 function openDataSheet(){
   const games=store.sessions.length;
-  const rounds=store.sessions.reduce((a,s)=>a+s.matchdays.reduce((x,m)=>x+m.rounds.length,0),0);
+  const rounds=store.sessions.reduce((a,s)=>a+s.matchdays.filter(m=>!m.isDeleted)
+    .reduce((x,m)=>x+m.rounds.filter(r=>!r.isDeleted && r.winnerTeam!==null).length,0),0);
+  const row=(id,icon,label,cls)=>`<button type="button" class="row ${cls||''}" id="${id}">
+      <span class="row-ic">${icon}</span><span class="row-title">${label}</span><span class="row-chev">${IC.chevron}</span></button>`;
   const body=`
     <div class="info-box" style="margin-top:8px"><span class="i">${IC.shield}</span>
-      Alle Daten liegen nur auf diesem Gerät (localStorage). Exportiere regelmäßig ein Backup –
-      z.B. auf dein NAS oder in deinen Obsidian-Vault.</div>
-    <div class="panel" style="margin-bottom:16px">
+      Alle Spielstände liegen nur auf diesem Gerät. Sichere regelmäßig ein Backup.</div>
+    <div class="panel">
       <div class="cardtitle">Aktuell aufgezeichnet</div>
       <div style="display:flex;gap:24px">
         <div class="stat-block"><span class="sv">${games}</span><span class="ss">${games===1?'Spiel':'Spiele'}</span></div>
-        <div class="stat-block"><span class="sv">${rounds}</span><span class="ss">${rounds===1?'Runde':'Runden'} gesamt</span></div>
+        <div class="stat-block"><span class="sv">${rounds}</span><span class="ss">gespielte ${rounds===1?'Runde':'Runden'}</span></div>
       </div>
     </div>
-    <button class="dice-btn" id="d-share" style="margin-top:0">${IC.share}Backup an Mitspieler teilen</button>
-    <button class="dice-btn" id="d-export" style="background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.download}Backup exportieren (JSON)</button>
-    <button class="dice-btn" id="d-csv" style="background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.table}Alle Runden als CSV</button>
-    <div style="height:14px"></div>
-    <p class="field-lbl">Backup importieren</p>
-    <button class="dice-btn" id="d-merge" style="background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.upload}Zusammenführen (empfohlen)</button>
-    <button class="dice-btn" id="d-replace" style="background:var(--surface);color:var(--danger);border:1px solid rgba(196,75,75,.4)">${IC.upload}Alles ersetzen</button>
-    <input type="file" id="d-file" accept="application/json,.json" style="display:none">
-    <p class="hint">Zusammenführen fügt Spiele hinzu bzw. aktualisiert gleiche; Ersetzen überschreibt alles auf diesem Gerät.</p>
-    <div style="height:22px"></div>
-    <p class="field-lbl">${IC.cloud} Home-Lab Sync (optional)</p>
-    <div class="section">
-      <input class="txtfield" id="sy-url" placeholder="https://dein-name.duckdns.org" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(syncCfg.url)}">
-    </div>
-    <div class="section">
-      <input class="txtfield" id="sy-token" type="password" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(syncCfg.token)}">
-    </div>
-    <button class="dice-btn" id="sy-save" style="margin-top:0">${IC.check}Sync-Zugang speichern</button>
-    <div style="display:flex;gap:10px;margin-top:10px">
-      <button class="dice-btn" id="sy-push" style="flex:1;background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.upload}Jetzt sichern</button>
-      <button class="dice-btn" id="sy-pull" style="flex:1;background:var(--surface);color:var(--cream);border:1px solid var(--border)">${IC.download}Von Server laden</button>
-    </div>
-    <p class="hint" id="sync-status">${syncCfg.lastSync?"Zuletzt gesynct: "+fmt.timeShort(syncCfg.lastSync):"Noch nicht synchronisiert"}</p>
-    <p class="hint">URL und Token bleiben nur in diesem Browser gespeichert, nie im App-Code. Nach jeder Änderung wird automatisch ein Backup an deinen eigenen Server geschickt.</p>`;
+    <div class="section"><p class="field-lbl">Sichern</p>
+      <div class="group">
+        ${row("d-share", IC.share, "Backup teilen")}
+        ${row("d-export", IC.download, "Backup als Datei sichern")}
+        ${row("d-csv", IC.table, "Alle Runden als CSV")}
+      </div></div>
+    <div class="section"><p class="field-lbl">Wiederherstellen</p>
+      <div class="group">
+        ${row("d-merge", IC.upload, "Backup zusammenführen")}
+        ${row("d-replace", IC.upload, "Alles durch Backup ersetzen", "destructive")}
+      </div>
+      <input type="file" id="d-file" accept="application/json,.json" hidden>
+      <p class="hint">Zusammenführen fügt Spiele hinzu und behält bei gleichen Spielen den neueren Stand. Ersetzen überschreibt alles auf diesem Gerät.</p></div>
+    <div class="section"><p class="field-lbl">Home-Lab Sync (optional)</p>
+      <div class="group">
+        <label class="row"><span class="row-ic">${IC.cloud}</span>
+          <input class="row-input" id="sy-url" type="url" inputmode="url" placeholder="https://dein-name.duckdns.org" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Server-Adresse" value="${esc(syncCfg.url)}"></label>
+        <label class="row"><span class="row-ic">${IC.shield}</span>
+          <input class="row-input" id="sy-token" type="password" placeholder="Token" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Token" value="${esc(syncCfg.token)}"></label>
+      </div>
+      <div class="group" style="margin-top:10px">
+        ${row("sy-save", IC.check, "Zugang speichern")}
+        ${row("sy-push", IC.upload, "Jetzt sichern")}
+        ${row("sy-pull", IC.download, "Vom Server laden")}
+      </div>
+      <p class="hint" id="sync-status"></p>
+      <p class="hint">Adresse und Token bleiben nur in diesem Browser. Nach jeder Änderung geht automatisch ein Backup an deinen eigenen Server (nur über https).</p></div>`;
   const {el,close}=sheetShell({ title:"Daten & Backup", trail:`<button id="d-done">Fertig</button>`, body });
+  renderSyncStatus();
   let pendingMode="merge";
   const fileInput=$('#d-file',el);
   fileInput.onchange=(e)=>{ const f=e.target.files&&e.target.files[0]; if(f){ importBackup(f,pendingMode); close(); } e.target.value=""; };
@@ -1471,32 +1657,41 @@ function openDataSheet(){
     alertDialog({title:"Alles ersetzen?", message:"Alle Spiele auf diesem Gerät werden durch das Backup ersetzt.",
       confirmLabel:"Datei wählen", destructive:true, onConfirm:()=>{ pendingMode="replace"; fileInput.click(); }});
   };
+  // Zugang aus den Feldern übernehmen; false, wenn die Adresse nicht zulässig ist
+  const readCfg=()=>{
+    const url=$('#sy-url',el).value.trim(), token=$('#sy-token',el).value.trim();
+    if(url && !validSyncUrl(url)){ toast("Die Adresse muss mit https:// beginnen"); return false; }
+    syncCfg.url=url; syncCfg.token=token; saveSyncCfg(); return true;
+  };
   $('#sy-save',el).onclick=()=>{
-    syncCfg.url=$('#sy-url',el).value.trim();
-    syncCfg.token=$('#sy-token',el).value.trim();
-    saveSyncCfg();
-    toast(syncConfigured() ? "Sync-Zugang gespeichert" : "Sync-Zugang entfernt");
+    if(!readCfg()) return;
+    toast(syncConfigured() ? "Sync-Zugang gespeichert" : "Sync-Zugang entfernt"); renderSyncStatus();
   };
   $('#sy-push',el).onclick=()=>{
-    syncCfg.url=$('#sy-url',el).value.trim(); syncCfg.token=$('#sy-token',el).value.trim(); saveSyncCfg();
-    if(!syncConfigured()) return toast("Bitte URL und Token eintragen");
+    if(!readCfg()) return;
+    if(!syncConfigured()) return toast("Bitte Adresse und Token eintragen");
     syncPush(false);
   };
   $('#sy-pull',el).onclick=()=>{
-    syncCfg.url=$('#sy-url',el).value.trim(); syncCfg.token=$('#sy-token',el).value.trim(); saveSyncCfg();
-    if(!syncConfigured()) return toast("Bitte URL und Token eintragen");
+    if(!readCfg()) return;
+    if(!syncConfigured()) return toast("Bitte Adresse und Token eintragen");
     alertDialog({title:"Vom Server laden?", message:"Spiele vom Home-Lab werden mit denen auf diesem Gerät zusammengeführt.",
-      confirmLabel:"Laden", onConfirm:syncPull});
+      confirmLabel:"Laden", onConfirm:()=>{ close(); syncPull(); }});
   };
 }
 
 let toastTimer;
 function toast(msg){
   const t=$("#toast"); t.textContent=msg; t.classList.add("show");
-  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2200);
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"), Math.min(5000, 1800+msg.length*35));
 }
 
 // ─────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────
 renderScreen();
+if(loadWarning) toast("⚠ "+loadWarning);
+// Service Worker (früher Inline-Skript in index.html – wegen der Content-Security-Policy hierher verlegt)
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js').catch(()=>{}));
+}
