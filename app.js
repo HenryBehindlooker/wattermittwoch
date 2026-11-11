@@ -52,31 +52,18 @@ const IC = {
 };
 
 // ─────────────────────────────────────────────────────────────
-// Game Variants
+// Datenkern (core.js): Modell, Prüfung, Zusammenführen
 // ─────────────────────────────────────────────────────────────
-const VARIANTS = {
-  watten:    { key:"watten",    name:"Watten",             defaultTarget:15, desc:"Klassisches Watten · bis 15 Punkte" },
-  ladinisch: { key:"ladinisch", name:"Watten – Ladinisch", defaultTarget:15, desc:"Ladinische Variante · bis 15 Punkte" },
-  kritisch:  { key:"kritisch",  name:"Watten Kritisch",    defaultTarget:11, desc:"Kritisch · bis 11 Punkte" },
-};
-const VARIANT_ORDER = ["watten","ladinisch","kritisch"];
-const TRICKS_TO_WIN = 3;
-
-const UNDO_LABEL = {
-  addTrick:"Stich hinzugefügt", increaseBid:"Gebot erhöht", nextRound:"Nächste Runde",
-  nextMatchday:"Neuer Spieltag", teamChange:"Teams geändert", deleteRound:"Runde gelöscht",
-  deleteMatchday:"Spieltag gelöscht", winHand:"Spiel gewonnen", fold:"Gegangen", other:"Aktion",
-};
-const UNDO_MAX = 30;
+const { VARIANTS, VARIANT_ORDER, TRICKS_TO_WIN, UNDO_LABEL, UNDO_MAX, MAXLEN,
+        uuid, clone, newRound, defaultTeams, makeTeams, newMatchday, newSession,
+        safeTs, cleanStr, roundWorth, normalizeSession, safeNormalize,
+        sessionUpdatedAt, mergeSessions } = Core;
 // Ab so vielen fehlenden Punkten ist ein Team "gestrichen" (kann das Spiel mit dem Grundwert beenden)
 const GESTRICHEN_DIFF = 2;
 
 // ─────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────
-const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
-  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);}));
-const clone = (o) => (typeof structuredClone==='function' ? structuredClone(o) : JSON.parse(JSON.stringify(o)));
 const $ = (sel,root=document) => root.querySelector(sel);
 
 const fmt = {
@@ -98,171 +85,12 @@ const Haptics = {
   warning:()=>navigator.vibrate&&navigator.vibrate([25,40,25]),
 };
 
-// ─────────────────────────────────────────────────────────────
-// Models
-// ─────────────────────────────────────────────────────────────
-function newPlayer(name){ return {id:uuid(), name}; }
-function newRound(){
-  return {id:uuid(), teamAPoints:0, teamBPoints:0, hands:[], winnerTeam:null,
-          startedAt:Date.now(), endedAt:null, isDeleted:false, deletedAt:null};
-}
-function defaultTeams(rotationIndex){
-  switch(((rotationIndex%3)+3)%3){
-    case 0:  return {teamA:[0,1], teamB:[2,3]};
-    case 1:  return {teamA:[0,2], teamB:[1,3]};
-    default: return {teamA:[0,3], teamB:[1,2]};
-  }
-}
-// Teamaufstellung eines Spieltags: {teamA:[i,i], teamB:[i,i], nameA, nameB}
-function makeTeams(teamA, teamB, nameA, nameB){
-  return {teamA:teamA.slice(), teamB:teamB.slice(), nameA:nameA||null, nameB:nameB||null};
-}
-function newMatchday(rotationIndex, teams){
-  const d=defaultTeams(rotationIndex);
-  return {id:uuid(), rotationIndex, date:Date.now(), rounds:[newRound()],
-          teamARoundsWon:0, teamBRoundsWon:0, isDeleted:false, deletedAt:null,
-          teams: teams || makeTeams(d.teamA, d.teamB)};
-}
-function newSession(name, variantKey, quickMode, playerNames){
-  const v = VARIANTS[variantKey] || VARIANTS.ladinisch;
-  const pn = playerNames || [];
-  return {
-    id:uuid(), name, variant:v.key, targetPoints:v.defaultTarget, quickMode:!!quickMode,
-    players:[1,2,3,4].map(i=>newPlayer(cleanStr(pn[i-1]||"",MAXLEN.player) || `Spieler ${i}`)),
-    matchdays:[newMatchday(0)], currentMatchdayIndex:0,
-    tricksA:0, tricksB:0, currentBid:2,
-    customTeamA:null, customTeamB:null, customTeamNameA:null, customTeamNameB:null,
-    undoStack:[], createdAt:Date.now(), updatedAt:Date.now(),
-  };
-}
-
-// ── Eingangsprüfung für geladene/importierte Daten ──
-// IDs landen in HTML-Attributen, Zeitstempel in Intl-Formatierern → strikt prüfen.
-const MAXLEN = {session:40, player:20, team:30};
-const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const safeId   = (v)=> (typeof v==="string" && SAFE_ID.test(v)) ? v : uuid();
-const safeTs   = (v,fallback)=> (Number.isFinite(v) && v>0 && v<8.64e15) ? v : fallback;
-const safeInt  = (v,min,max,fallback)=> (Number.isFinite(v) && v>=min) ? Math.min(max,Math.floor(v)) : fallback;
-// nur echte Texte/Zahlen übernehmen – Objekte könnten beim Umwandeln eine Exception werfen
-const cleanStr = (v,max)=> (typeof v==="string" ? v : typeof v==="number" ? String(v) : "").replace(/[\u0000-\u001f\u007f]/g," ").trim().slice(0,max);
-
-const isTeamIdx = (t)=> Array.isArray(t) && t.length===2 && t[0]!==t[1] && t.every(i=>Number.isInteger(i) && i>=0 && i<4);
-const roundWorth = (r)=> r.schneider ? 2 : 1;
-
-// Bringt geladene/importierte Daten auf den aktuellen Stand und repariert
-// Inkonsistenzen aus älteren Versionen. Gibt null zurück, wenn unbrauchbar.
-function normalizeSession(s){
-  if(!s || typeof s!=="object" || Array.isArray(s) || !s.id || !Array.isArray(s.matchdays)) return null;
-  s.id=safeId(s.id);
-  s.createdAt=safeTs(s.createdAt, Date.now());
-  // Änderungszeitpunkt festhalten, bevor unten repariert wird (sonst wirken alte Backups "neu")
-  s.updatedAt=safeTs(s.updatedAt, null) || safeTs(sessionUpdatedAt(s), s.createdAt);
-  if(!Object.prototype.hasOwnProperty.call(VARIANTS, s.variant)) s.variant="ladinisch";
-  s.targetPoints=safeInt(s.targetPoints, 1, 99, VARIANTS[s.variant].defaultTarget);
-  s.name=cleanStr(s.name, MAXLEN.session) || "Spiel";
-  if(!Array.isArray(s.players)) s.players=[];
-  s.players=s.players.filter(p=>p&&typeof p==="object").slice(0,4);
-  s.players.forEach((p,i)=>{ p.id=safeId(p.id); p.name=cleanStr(p.name, MAXLEN.player) || `Spieler ${i+1}`; });
-  while(s.players.length<4) s.players.push(newPlayer(`Spieler ${s.players.length+1}`));
-  s.quickMode=!!s.quickMode;
-  s.tricksA=safeInt(s.tricksA, 0, TRICKS_TO_WIN-1, 0);
-  s.tricksB=safeInt(s.tricksB, 0, TRICKS_TO_WIN-1, 0);
-  s.currentBid=safeInt(s.currentBid, 2, 99, 2);
-  if(!(isTeamIdx(s.customTeamA) && isTeamIdx(s.customTeamB))){ s.customTeamA=null; s.customTeamB=null; }
-  s.customTeamNameA=cleanStr(s.customTeamNameA, MAXLEN.team)||null;
-  s.customTeamNameB=cleanStr(s.customTeamNameB, MAXLEN.team)||null;
-  // Undo-Einträge: nur bekannte Aktionen und gültige Zeitstempel (Inhalt wird beim Zurückspielen erneut geprüft)
-  s.undoStack=(Array.isArray(s.undoStack)?s.undoStack:[])
-    .filter(u=>u&&typeof u==="object"&&!Array.isArray(u)).slice(-UNDO_MAX);
-  s.undoStack.forEach(u=>{
-    if(!Object.prototype.hasOwnProperty.call(UNDO_LABEL, u.action)) u.action="other";
-    u.timestamp=safeTs(u.timestamp, s.updatedAt);
-  });
-
-  s.matchdays=s.matchdays.filter(m=>m&&typeof m==="object");
-  if(!s.matchdays.length) s.matchdays.push(newMatchday(0));
-  s.matchdays.forEach(md=>{
-    md.id=safeId(md.id);
-    md.rotationIndex=safeInt(md.rotationIndex, 0, 1e6, 0);
-    md.date=safeTs(md.date, s.createdAt);
-    md.isDeleted=!!md.isDeleted;
-    md.deletedAt=safeTs(md.deletedAt, null);
-    if(!Array.isArray(md.rounds)) md.rounds=[];
-    md.rounds=md.rounds.filter(r=>r&&typeof r==="object");
-    md.rounds.forEach(r=>{
-      r.id=safeId(r.id);
-      r.teamAPoints=safeInt(+r.teamAPoints, 0, 9999, 0); r.teamBPoints=safeInt(+r.teamBPoints, 0, 9999, 0);
-      r.hands=Array.isArray(r.hands) ? r.hands.filter(h=>h&&typeof h==="object") : [];
-      if(r.winnerTeam!==0 && r.winnerTeam!==1) r.winnerTeam=null;
-      r.isDeleted=!!r.isDeleted;
-      r.startedAt=safeTs(r.startedAt, md.date);
-      r.endedAt=safeTs(r.endedAt, null);
-      r.deletedAt=safeTs(r.deletedAt, null);
-      if(r.schneider) r.schneider=true; else delete r.schneider;
-      if(r.closed) r.closed=true; else delete r.closed;
-      if(r.teams && isTeamIdx(r.teams.teamA) && isTeamIdx(r.teams.teamB)) r.teams={teamA:r.teams.teamA.slice(), teamB:r.teams.teamB.slice()};
-      else delete r.teams;
-    });
-    // Ältere Versionen kannten keine Teams pro Spieltag → so einfrieren, wie sie bisher angezeigt wurden
-    if(md.teams && isTeamIdx(md.teams.teamA) && isTeamIdx(md.teams.teamB)){
-      md.teams=makeTeams(md.teams.teamA, md.teams.teamB, cleanStr(md.teams.nameA,MAXLEN.team), cleanStr(md.teams.nameB,MAXLEN.team));
-    }else{
-      md.teams = (s.customTeamA && s.customTeamB)
-        ? makeTeams(s.customTeamA, s.customTeamB, s.customTeamNameA, s.customTeamNameB)
-        : (d=>makeTeams(d.teamA,d.teamB))(defaultTeams(md.rotationIndex));
-    }
-    // Rundenzähler immer aus den Runden ableiten (repariert alte Inkonsistenzen)
-    md.teamARoundsWon=0; md.teamBRoundsWon=0;
-    md.rounds.forEach(r=>{
-      if(r.isDeleted || r.winnerTeam===null) return;
-      if(r.winnerTeam===0) md.teamARoundsWon+=roundWorth(r); else md.teamBRoundsWon+=roundWorth(r);
-    });
-  });
-  if(!(Number.isInteger(s.currentMatchdayIndex) && s.currentMatchdayIndex>=0 && s.currentMatchdayIndex<s.matchdays.length))
-    s.currentMatchdayIndex=s.matchdays.length-1;
-  // Es wird nie in einen gelöschten Spieltag / eine gelöschte oder beendete Runde weitergezählt
-  let cur=s.matchdays[s.currentMatchdayIndex];
-  if(cur.isDeleted){
-    s.matchdays.push(newMatchday(cur.rotationIndex, makeTeams(cur.teams.teamA,cur.teams.teamB,cur.teams.nameA,cur.teams.nameB)));
-    s.currentMatchdayIndex=s.matchdays.length-1; cur=s.matchdays[s.currentMatchdayIndex];
-  }
-  const last=cur.rounds[cur.rounds.length-1];
-  if(!last || last.isDeleted || last.winnerTeam!==null || last.closed){
-    cur.rounds.push(newRound()); s.tricksA=0; s.tricksB=0; s.currentBid=2;
-  }
-  return s;
-}
-
-// Wie normalizeSession, aber ein einzelner kaputter Eintrag reißt nie alle anderen mit
-function safeNormalize(s){
-  try{ return normalizeSession(s); }catch(e){ console.warn("Eintrag übersprungen", e); return null; }
-}
-
-// Zeitpunkt der letzten Änderung – für das Zusammenführen von Backups
-function sessionUpdatedAt(s){
-  if(Number.isFinite(s.updatedAt)) return s.updatedAt;
-  let t=s.createdAt||0;
-  for(const md of s.matchdays||[]){
-    t=Math.max(t, md.date||0, md.deletedAt||0);
-    for(const r of md.rounds||[]){
-      t=Math.max(t, r.startedAt||0, r.endedAt||0, r.deletedAt||0);
-      for(const h of r.hands||[]) t=Math.max(t, h.timestamp||0);
-    }
-  }
-  for(const u of s.undoStack||[]) t=Math.max(t, u.timestamp||0);
-  return t;
-}
-// Führt Sessions zusammen; bei gleicher ID gewinnt der neuere Stand
-function mergeSessions(local, incoming){
-  const byId=new Map(local.map(s=>[s.id,s]));
-  const res={added:0, updated:0, kept:0};
-  for(const s of incoming){
-    const ex=byId.get(s.id);
-    if(!ex){ byId.set(s.id,s); res.added++; }
-    else if(sessionUpdatedAt(s) > sessionUpdatedAt(ex)){ byId.set(s.id,s); res.updated++; }
-    else res.kept++;
-  }
-  return {sessions:[...byId.values()], ...res};
+// Inhalt eines Objekts ersetzen, ohne seine Identität zu ändern – offene Sheets
+// und Dialoge halten Verweise auf das Spiel, die gültig bleiben müssen.
+function replaceInPlace(target, src){
+  if(target===src) return target;
+  for(const k of Object.keys(target)) delete target[k];
+  return Object.assign(target, src);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -277,7 +105,7 @@ function loadStore(){
     if(!raw) return {sessions:[]};
     const s = JSON.parse(raw);
     if(!s || !Array.isArray(s.sessions)) throw new Error("unerwartetes Format");
-    return {sessions: s.sessions.map(safeNormalize).filter(Boolean)};
+    return {sessions: s.sessions.map(x=>safeNormalize(x)).filter(Boolean)};
   }catch(e){
     // Unlesbarer Speicher: Rohdaten beiseitelegen, statt sie beim nächsten Speichern
     // kommentarlos mit einem leeren Stand zu überschreiben.
@@ -406,7 +234,7 @@ const Game = {
       s.name=snap.name; s.variant=snap.variant; s.targetPoints=snap.targetPoints; s.quickMode=snap.quickMode;
     }
     if(snap.players) s.players=snap.players;
-    normalizeSession(s);
+    replaceInPlace(s, normalizeSession(s) || s);
     Haptics.warning();
   },
 
@@ -1359,13 +1187,13 @@ function donutChart(s){
 // ─────────────────────────────────────────────────────────────
 // Alerts / confirms
 // ─────────────────────────────────────────────────────────────
-function alertDialog({title,message,confirmLabel,destructive,onConfirm,cancelLabel}){
+function alertDialog({title,message,confirmLabel,destructive,onConfirm,cancelLabel,info}){
   const el=document.createElement('div');
   el.className='alert-back';
   el.innerHTML=`<div class="alert" role="alertdialog" aria-modal="true" aria-label="${esc(title)}"><div class="at">${esc(title)}</div>
     ${message?`<div class="am">${esc(message)}</div>`:''}
     <div class="ab">
-      <button class="cancel">${esc(cancelLabel||'Abbrechen')}</button>
+      ${info?'':`<button class="cancel">${esc(cancelLabel||'Abbrechen')}</button>`}
       <button class="${destructive?'destructive':''} ok">${esc(confirmLabel)}</button>
     </div></div>`;
   modalRoot.appendChild(el); lockScroll(true);
@@ -1375,13 +1203,14 @@ function alertDialog({title,message,confirmLabel,destructive,onConfirm,cancelLab
     el.classList.remove('open'); setTimeout(()=>{ el.remove(); lockScroll(false); },200); return true; };
   const nav=Nav.push(finish, true);
   const close=()=>{ if(finish()) Nav.drop(nav); };
-  $('.cancel',el).onclick=close;
+  if(!info) $('.cancel',el).onclick=close;
   $('.ok',el).onclick=()=>{ close(); onConfirm&&onConfirm(); };
   el.onclick=(e)=>{ if(e.target===el) close(); };
 }
 function confirmDeleteSession(id, before){
   const s=store.sessions.find(x=>x.id===id); if(!s) return;
-  alertDialog({title:`„${s.name}“ löschen?`, message:"Alle Spieltage und Runden dieses Spiels werden dauerhaft gelöscht. Das lässt sich nicht rückgängig machen.",
+  alertDialog({title:`„${s.name}“ löschen?`, message:"Alle Spieltage und Runden dieses Spiels werden dauerhaft gelöscht"
+      +(sharedOn() ? " – auch in der gemeinsamen Liste, auf allen verbundenen Geräten" : "")+". Das lässt sich nicht rückgängig machen.",
     confirmLabel:"Löschen", destructive:true, onConfirm:()=>{
       before&&before();
       store.sessions=store.sessions.filter(x=>x.id!==id);
@@ -1470,7 +1299,7 @@ function parseBackup(raw){
   if(!sessions) throw new Error("Kein gültiges Watten-Backup.");
   if(sessions.length>MAX_IMPORT_SESSIONS) throw new Error("Zu viele Spiele im Backup.");
   // Undo-Verläufe fremder Geräte werden nicht übernommen (unnötig, und weniger ungeprüfte Daten)
-  return sessions.map(safeNormalize).filter(Boolean).map(s=>{ s.undoStack=[]; return s; });
+  return sessions.map(x=>safeNormalize(x)).filter(Boolean).map(s=>{ s.undoStack=[]; return s; });
 }
 function mergeToast(prefix,res){
   const parts=[];
@@ -1552,6 +1381,7 @@ function syncEndpoint(path){ return syncCfg.url.replace(/\/+$/,"") + path; }
 
 let syncTimer=null, syncBusy=false, syncAgain=false;
 function scheduleSync(){
+  if(Shared) Shared.schedule();           // gemeinsame Liste (Supabase), falls verbunden
   if(!syncConfigured()) return;
   clearTimeout(syncTimer);
   syncTimer=setTimeout(syncPush, 2500);
@@ -1587,7 +1417,7 @@ async function syncPull(){
     if(!res.ok) throw new Error("HTTP "+res.status);
     const incoming=parseBackup(await res.text());
     const m=mergeSessions(store.sessions,incoming); store.sessions=m.sessions;
-    saveStore(); renderScreen();
+    saveStore(); renderScreen(); if(Shared) Shared.schedule();
     mergeToast("Vom Home-Lab",m);
   }catch(e){ toast("Laden fehlgeschlagen: "+e.message); }
 }
@@ -1598,6 +1428,191 @@ function renderSyncStatus(err){
   else if(err){ el.textContent="⚠ Sync fehlgeschlagen: "+err; el.style.color="var(--danger)"; }
   else if(syncCfg.lastSync){ el.textContent="Zuletzt gesynct: "+fmt.timeShort(syncCfg.lastSync); el.style.color="var(--streak)"; }
   else{ el.textContent="Noch nicht synchronisiert"; el.style.color="var(--muted)"; }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Gemeinsam nutzen (optional): Spiele über Supabase mit anderen Geräten teilen.
+// Abgleich und Verbindung stecken in sync.js, das Zusammenführen in core.js.
+// ─────────────────────────────────────────────────────────────
+const Shared = window.Sync || null;
+const sharedOn = ()=> !!(Shared && Shared.configured());
+
+// Stand aus der gemeinsamen Liste übernehmen. Die Spiel-Objekte behalten ihre
+// Identität, damit offene Sheets und Dialoge weiter auf das richtige Spiel zeigen.
+function applySharedDoc(doc){
+  const byId=new Map(store.sessions.map(s=>[s.id,s]));
+  const openId = view.screen==="game" ? view.sessionId : null;
+  store.sessions = doc.sessions.map(d=>{
+    const ex=byId.get(d.id);
+    const full=normalizeSession({...d, undoStack: ex ? ex.undoStack : []});
+    if(!full) return ex || null;
+    if(!ex) return full;
+    // Kam für dieses Spiel etwas von einem anderen Gerät, ist der eigene Rückgängig-Verlauf
+    // überholt – er würde sonst fremde Einträge mit zurücknehmen.
+    if(!Core.same(Core.sharedOf(ex), d)) full.undoStack=[];
+    return replaceInPlace(ex, full);
+  }).filter(Boolean);
+  saveStore();
+  if(openId && !store.sessions.some(s=>s.id===openId)){
+    while(Nav.stack.some(e=>e.modal)) Nav.closeTop();     // Sheets/Dialoge zu einem Spiel, das es nicht mehr gibt
+    toast("Dieses Spiel wurde auf einem anderen Gerät gelöscht");
+  }
+  renderScreen();
+}
+
+function shareStatusText(){
+  const S=Shared;
+  if(S.status==="busy") return ["Wird abgeglichen …","var(--muted)"];
+  if(S.status==="offline") return ["Offline – wird später abgeglichen","var(--gold)"];
+  if(S.status==="error") return ["Fehler: "+S.lastError,"var(--danger)"];
+  if(!S.lastSync) return ["Verbunden","var(--streak)"];
+  const sec=Math.round((Date.now()-S.lastSync)/1000);
+  return ["Abgeglichen "+(sec<60 ? "gerade eben" : `vor ${Math.round(sec/60)} Min.`),"var(--streak)"];
+}
+function renderShareStatus(){
+  const el=document.getElementById("share-status"); if(!el || !sharedOn()) return;
+  const [text,color]=shareStatusText();
+  el.textContent=text; el.style.color=color;
+  const dot=document.getElementById("share-dot"); if(dot) dot.className="sync-dot "+Shared.status;
+}
+
+async function shareText(text, copiedMsg){
+  try{
+    if(navigator.share){ await navigator.share({text}); return; }
+  }catch(e){ if(e && e.name==="AbortError") return; }
+  try{ await navigator.clipboard.writeText(text); toast(copiedMsg); }
+  catch(e){ toast("Teilen nicht verfügbar"); }
+}
+function shareInvite(){
+  shareText(`🃏 Zähl mit beim Watten!\nLink öffnen und „Beitreten“ tippen:\n${Shared.inviteLink()}`, "Einladungslink kopiert");
+}
+
+// Sicherheitskopie der Spiele dieses Geräts, bevor es einer Liste beitritt (ein Platz, wird überschrieben)
+function keepCopyBeforeJoin(){
+  try{ localStorage.setItem(STORE_KEY+"_vor_beitritt", JSON.stringify({savedAt:Date.now(), sessions:store.sessions})); }catch(e){}
+}
+
+async function shareCreate(url, key, done){
+  const cleanUrl=Shared.cleanUrl(url), k=(key||"").trim();
+  if(!cleanUrl) return toast("Die Projekt-URL muss mit https:// beginnen");
+  if(!Shared.validKey(k)) return toast("Bitte den Anon-Key vollständig eintragen");
+  Shared.configure({url:cleanUrl, key:k, code:Shared.newCode()});
+  done();
+  try{
+    await Shared.run();
+    done();
+    toast("Gemeinsame Liste erstellt");
+    shareInvite();
+  }catch(e){
+    Shared.configure(null);
+    done();
+    alertDialog({title:"Verbindung fehlgeschlagen", info:true, confirmLabel:"OK",
+      message:`${(e&&e.message)||e} – Sind URL und Anon-Key richtig, und wurde supabase.sql im Projekt ausgeführt?`});
+  }
+}
+
+// Beitritt nur nach ausdrücklicher Bestätigung; der Dialog nennt den Server.
+function shareJoin(cfg, done){
+  let host=""; try{ host=new URL(cfg.url).host; }catch(e){}
+  const n=store.sessions.length;
+  const mine = n ? ` ${n===1?"Das Spiel":`Die ${n} Spiele`} auf diesem Gerät ${n===1?"kommt":"kommen"} zur gemeinsamen Liste dazu und ${n===1?"ist":"sind"} dann für alle sichtbar.` : "";
+  const switching = sharedOn() ? " Die bisherige Verbindung wird dabei getrennt." : "";
+  alertDialog({title:"Gemeinsamer Liste beitreten?",
+    message:`Dieses Gerät verbindet sich mit dem Server ${host}.${mine}${switching} Tritt nur bei, wenn du den Link von jemandem aus deiner Runde bekommen hast.`,
+    confirmLabel:"Beitreten", onConfirm:async()=>{
+      keepCopyBeforeJoin();
+      Shared.configure(cfg);
+      done&&done();
+      try{
+        await Shared.run({join:true});
+        done&&done();
+        toast("Beigetreten – ihr nutzt jetzt eine gemeinsame Liste");
+      }catch(e){
+        Shared.configure(null);
+        done&&done();
+        alertDialog({title:"Beitreten fehlgeschlagen", info:true, confirmLabel:"OK", message:(e&&e.message)||String(e)});
+      }
+    }});
+}
+
+function shareLeave(done){
+  alertDialog({title:"Verbindung trennen?", destructive:true, confirmLabel:"Trennen",
+    message:"Die Spiele bleiben auf diesem Gerät, werden aber nicht mehr mit den anderen abgeglichen.",
+    onConfirm:()=>{ Shared.configure(null); done(); toast("Verbindung getrennt"); }});
+}
+
+// Abschnitt „Gemeinsam nutzen“ im Sheet „Daten & Backup“
+function renderShareSection(box){
+  if(!Shared){ box.innerHTML=""; return; }
+  const row=(id,icon,label,cls)=>`<button type="button" class="row ${cls||''}" id="${id}">
+      <span class="row-ic">${icon}</span><span class="row-title">${label}</span><span class="row-chev">${IC.chevron}</span></button>`;
+  const again=()=>renderShareSection(box);
+  if(!sharedOn()){
+    box.innerHTML=`<p class="field-lbl">Gemeinsam nutzen (optional)</p>
+      <div class="group">
+        <label class="row"><span class="row-ic">${IC.cloud}</span>
+          <input class="row-input" id="sh-url" type="url" inputmode="url" placeholder="Projekt-URL (https://…supabase.co)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Projekt-URL"></label>
+        <label class="row"><span class="row-ic">${IC.shield}</span>
+          <input class="row-input" id="sh-key" placeholder="Anon-Key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Anon-Key"></label>
+      </div>
+      <div class="group" style="margin-top:10px">${row("sh-create", IC.plusCircle, "Gemeinsame Liste erstellen")}</div>
+      <div class="group" style="margin-top:10px">
+        <label class="row"><span class="row-ic">${IC.share}</span>
+          <input class="row-input" id="sh-link" placeholder="Einladungslink einfügen" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Einladungslink"></label>
+        ${row("sh-join", IC.person, "Mit Einladungslink beitreten")}
+      </div>
+      <p class="hint">Damit alle auf dem eigenen Handy mitzählen und denselben Stand sehen: kostenloses Supabase-Projekt anlegen, supabase.sql ausführen, URL und Anon-Key hier eintragen (Anleitung in der README). Wer einen Einladungslink bekommen hat, öffnet ihn einfach – oder fügt ihn hier ein, wenn die App vom Home-Bildschirm läuft.</p>`;
+    $('#sh-create',box).onclick=()=>shareCreate($('#sh-url',box).value, $('#sh-key',box).value, again);
+    $('#sh-join',box).onclick=()=>{
+      const cfg=Shared.parseInvite($('#sh-link',box).value);
+      if(!cfg) return toast("Das ist kein gültiger Einladungslink");
+      shareJoin(cfg, again);
+    };
+    return;
+  }
+  box.innerHTML=`<p class="field-lbl">Gemeinsam nutzen</p>
+    <div class="group">
+      <div class="row"><span class="row-ic"><span class="sync-dot" id="share-dot"></span></span>
+        <span class="row-stack"><span>Gemeinsame Liste aktiv</span><span class="row-sub">${esc(Shared.host())}</span><span class="row-sub" id="share-status"></span></span></div>
+      ${row("sh-now", IC.history, "Jetzt abgleichen")}
+      ${row("sh-invite", IC.share, "Einladungslink teilen")}
+      ${row("sh-leave", IC.trash, "Verbindung trennen", "destructive")}
+    </div>
+    <p class="hint">Änderungen werden automatisch abgeglichen, Punkte von mehreren Handys zusammengezählt. Wer den Einladungslink hat, kann alles lesen, ändern und löschen – also nur an die eigene Runde schicken.</p>`;
+  renderShareStatus();
+  $('#sh-now',box).onclick=()=>Shared.run().then(()=>toast("Abgeglichen")).catch(()=>toast("Abgleich fehlgeschlagen"));
+  $('#sh-invite',box).onclick=shareInvite;
+  $('#sh-leave',box).onclick=()=>shareLeave(again);
+}
+
+// Einladungslink in der Adresszeile: Zugangsdaten sofort entfernen, dann nachfragen.
+function takeInviteFromUrl(){
+  if(!Shared || !/#join=/.test(location.hash)) return;
+  const cfg=Shared.parseInvite(location.hash);
+  try{ history.replaceState(history.state, "", location.pathname+location.search); }catch(e){}
+  if(cfg) shareJoin(cfg);
+  else alertDialog({title:"Einladungslink ungültig", info:true, confirmLabel:"OK",
+    message:"Der Link ist unvollständig oder zeigt nicht auf eine verschlüsselte Verbindung (https)."});
+}
+
+function startShared(){
+  if(!Shared) return;
+  Shared.hooks.getState=()=>Core.docOf(store.sessions);
+  Shared.hooks.setState=applySharedDoc;
+  let before=Shared.status;
+  Shared.hooks.onStatus=(s)=>{
+    renderShareStatus();
+    // Nur beim Umschlagen melden, nicht bei jedem weiteren Fehlversuch
+    if(s==="error" && before!=="error") toast("⚠ Abgleich fehlgeschlagen – Änderungen bleiben auf diesem Gerät");
+    if(s!=="busy") before=s;
+  };
+  const tick=()=>{ if(document.visibilityState==="visible") Shared.run().catch(()=>{}); };
+  setInterval(tick, 30000);
+  document.addEventListener("visibilitychange", tick);
+  window.addEventListener("online", tick);
+  window.addEventListener("hashchange", takeInviteFromUrl);
+  tick();
+  takeInviteFromUrl();
 }
 
 function openDataSheet(){
@@ -1629,6 +1644,7 @@ function openDataSheet(){
       </div>
       <input type="file" id="d-file" accept="application/json,.json" hidden>
       <p class="hint">Zusammenführen fügt Spiele hinzu und behält bei gleichen Spielen den neueren Stand. Ersetzen überschreibt alles auf diesem Gerät.</p></div>
+    <div class="section" id="share-sec"></div>
     <div class="section"><p class="field-lbl">Home-Lab Sync (optional)</p>
       <div class="group">
         <label class="row"><span class="row-ic">${IC.cloud}</span>
@@ -1645,6 +1661,7 @@ function openDataSheet(){
       <p class="hint">Adresse und Token bleiben nur in diesem Browser. Nach jeder Änderung geht automatisch ein Backup an deinen eigenen Server (nur über https).</p></div>`;
   const {el,close}=sheetShell({ title:"Daten & Backup", trail:`<button id="d-done">Fertig</button>`, body });
   renderSyncStatus();
+  renderShareSection($('#share-sec',el));
   let pendingMode="merge";
   const fileInput=$('#d-file',el);
   fileInput.onchange=(e)=>{ const f=e.target.files&&e.target.files[0]; if(f){ importBackup(f,pendingMode); close(); } e.target.value=""; };
@@ -1654,7 +1671,8 @@ function openDataSheet(){
   $('#d-csv',el).onclick=exportAllCSV;
   $('#d-merge',el).onclick=()=>{ pendingMode="merge"; fileInput.click(); };
   $('#d-replace',el).onclick=()=>{
-    alertDialog({title:"Alles ersetzen?", message:"Alle Spiele auf diesem Gerät werden durch das Backup ersetzt.",
+    alertDialog({title:"Alles ersetzen?", message:"Alle Spiele auf diesem Gerät werden durch das Backup ersetzt."
+        +(sharedOn() ? " Das gilt auch für die gemeinsame Liste – auf allen verbundenen Geräten." : ""),
       confirmLabel:"Datei wählen", destructive:true, onConfirm:()=>{ pendingMode="replace"; fileInput.click(); }});
   };
   // Zugang aus den Feldern übernehmen; false, wenn die Adresse nicht zulässig ist
@@ -1691,6 +1709,7 @@ function toast(msg){
 // ─────────────────────────────────────────────────────────────
 renderScreen();
 if(loadWarning) toast("⚠ "+loadWarning);
+startShared();
 // Service Worker (früher Inline-Skript in index.html – wegen der Content-Security-Policy hierher verlegt)
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js').catch(()=>{}));

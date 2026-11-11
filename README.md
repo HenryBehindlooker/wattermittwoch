@@ -2,7 +2,8 @@
 
 Kartenspiel-Zähler für **Watten** (Watten / Ladinisch / Kritisch) – Stich-Tracking,
 Gebotssystem, Spieltage, Undo, Statistiken und Diagramme. Läuft komplett im
-Browser: kein Framework, kein Build-Step, kein Backend.
+Browser: kein Framework, kein Build-Step, kein Backend. Optional lassen sich die
+Spiele über Supabase auf mehreren Geräten gemeinsam nutzen.
 
 ## Spielregeln in der App
 
@@ -27,13 +28,17 @@ löscht. Die Zurück-Taste bzw. Wischgeste schließt erst Dialog und Sheet, dann
 | Datei | Zweck |
 |---|---|
 | `index.html` | App-Shell + CSS |
+| `core.js` | Datenkern: Modell, Prüfung geladener/eingehender Daten, Zusammenführen |
 | `app.js` | Spiellogik, Rendering, Charts, Persistenz |
+| `sync.js` | Abgleich mit Supabase, Einladungslink („Gemeinsam nutzen“) |
+| `supabase.sql` | Einmaliges Setup für „Gemeinsam nutzen“ |
 | `manifest.json` | Installierbar als App (Standalone-Modus) |
 | `service-worker.js` | Offline-Caching |
 | `icons/` | App-Icons |
 | `Dockerfile` · `nginx.conf` · `docker-compose.yml` | Optionales Self-Hosting per Docker |
-| `.github/workflows/deploy.yml` | Auto-Deploy bei jedem Push |
-| `tests/acceptance.js` · `package.json` | Akzeptanztests (nur für die Entwicklung) |
+| `.github/workflows/deploy.yml` | Auto-Deploy bei jedem Push auf `main` |
+| `.github/workflows/test.yml` | Alle Tests bei jedem Push und Pull Request |
+| `tests/` · `package.json` | Unit-Tests, Akzeptanztests, Zwei-Geräte-Test (nur für die Entwicklung) |
 
 ## Lokal testen
 
@@ -53,7 +58,7 @@ Danach läuft alles auch offline.
 
 ## Daten
 
-Kein Backend, keine Accounts, kein Tracking. Alle Spieldaten liegen nur lokal
+Kein Login, kein Tracking. Ohne weitere Einrichtung liegen alle Spieldaten nur lokal
 im Browser (`localStorage`), pro Gerät getrennt. Über das Archiv-Symbol
 (**Daten & Backup**) lassen sich Spielstände als JSON exportieren/importieren,
 als CSV exportieren, und optional automatisch an einen selbst gehosteten
@@ -61,31 +66,86 @@ Sync-Endpunkt sichern.
 
 > Browser-Daten löschen = Spielstände weg, wenn kein Backup existiert.
 
+## Gemeinsam nutzen (optional)
+
+Damit alle in der Runde auf dem eigenen Handy mitzählen und denselben Stand sehen. Die App
+funktioniert ohne diese Einrichtung unverändert weiter – und auch danach offline.
+
+**Einmalig einrichten (eine Person):**
+
+1. Auf [supabase.com](https://supabase.com) ein kostenloses Projekt anlegen.
+2. Im Dashboard unter *SQL Editor* den Inhalt von [`supabase.sql`](supabase.sql) einfügen und ausführen.
+3. Unter *Project Settings → API* die **Project URL** und den **anon / publishable key** kopieren.
+4. In der App *Daten & Backup → Gemeinsam nutzen*: beides eintragen und
+   **„Gemeinsame Liste erstellen“** tippen. Die bisherigen Spiele werden hochgeladen.
+5. **„Einladungslink teilen“** an die anderen schicken.
+
+**Beitreten (alle anderen):** Link öffnen und „Beitreten“ bestätigen. Der Dialog nennt den
+Server; ohne Bestätigung passiert nichts. Spiele, die schon auf dem Gerät liegen, kommen zur
+gemeinsamen Liste dazu. Läuft die App vom Home-Bildschirm, den Link stattdessen unter
+*Daten & Backup → Einladungslink einfügen* eintragen – auf dem iPhone hat die installierte App
+einen eigenen Speicher, getrennt von Safari.
+
+**So funktioniert der Abgleich:** Jedes Gerät merkt sich den letzten gemeinsamen Stand und führt
+Änderungen zusammen, statt sie zu überschreiben.
+
+- Jedes gewonnene Spiel ist ein eigener Eintrag. Einträge von mehreren Handys bleiben alle
+  erhalten, der Punktestand ist ihre Summe – auch für offline Gezähltes, sobald das Gerät wieder
+  online ist.
+- Erreicht die Summe das Ziel, gilt die Runde als gewonnen (Schneider nur ohne Gegenpunkte).
+- Neue Spiele, Spieltage und Runden von allen Seiten bleiben. Gelöschtes bleibt gelöscht – außer
+  jemand hat es inzwischen weitergespielt, dann geht das Weiterspielen vor.
+- Bei widersprüchlichen Einstellungen (z.B. zwei verschiedene neue Namen) gewinnt das Gerät, das
+  zuletzt abgleicht.
+- Der Rückgängig-Verlauf bleibt auf dem Gerät. Kommt für ein Spiel etwas von einem anderen Gerät,
+  wird er für dieses Spiel geleert, damit „Rückgängig“ keine fremden Einträge zurücknimmt.
+
+Zu beachten: Tragen zwei Handys **dasselbe** Spiel ein, zählt es doppelt. Am Tisch sollte also
+einer zählen; die anderen sehen mit.
+
+Abgeglichen wird nach jeder Änderung, beim Öffnen der App und alle 30 Sekunden, solange sie im
+Vordergrund ist. Den Status zeigt *Daten & Backup → Gemeinsam nutzen*. **„Verbindung trennen“**
+beendet den Abgleich; die Spiele bleiben auf dem Gerät.
+
 ## Tests
 
 ```bash
-npm install   # einmalig – installiert Playwright (nur für die Tests)
-npm test
+npm test                  # Unit-Tests des Datenkerns: Prüfung und Zusammenführen (nur Node ≥ 20)
+npm install               # einmalig – installiert Playwright für die Browser-Tests
+npx playwright install chromium
+npm run test:acceptance   # Akzeptanztests im Browser
+npm run test:e2e          # „Gemeinsam nutzen“ mit zwei Geräten
 ```
 
-`tests/acceptance.js` spielt die Anforderungen als Nutzerabläufe im Browser durch (iPhone-Profil,
-Touch): Spiel anlegen, Zählen, Schnellmodus, Gehen, Gestrichen, Schneider, Spieltage/Teams,
-Bedienung sowie Backup und Sicherheit. Einzelne Gruppen: `npm test -- C` oder `npm test -- F3`.
+Alle drei Läufe starten bei jedem Push und Pull Request automatisch (GitHub Actions).
+
+- `tests/core.test.js` – Prüfung eingehender Daten (unbekannte Felder, gefährliche Kennungen,
+  ältere Stände) und Zusammenführen (Addieren, offline, Rundenende, Löschen, Rückgängig, Beitritt).
+- `tests/acceptance.js` – die Anforderungen als Nutzerabläufe (iPhone-Profil, Touch): Spiel anlegen,
+  Zählen, Schnellmodus, Gehen, Gestrichen, Schneider, Spieltage/Teams, Bedienung, Backup und
+  Sicherheit, Übernahme eines Spielstands der Vorversion. Einzelne Gruppen:
+  `npm run test:acceptance -- C` oder `-- F3`.
+- `tests/e2e.js` – zwei getrennte Browser-Profile teilen eine Liste über einen nachgebauten
+  Supabase-Server: einrichten, einladen, beitreten, gleichzeitig und offline zählen,
+  Versionskonflikt, präparierte Daten, trennen.
 
 ## Sicherheit
 
-- Alles, was aus Backups oder dem Speicher kommt, wird beim Laden geprüft und beim Anzeigen
-  maskiert; ein manipuliertes Backup kann keinen Code ausführen.
+- Alles, was aus Backups, dem Speicher oder der gemeinsamen Liste kommt, wird geprüft, bevor es
+  angezeigt oder verrechnet wird; Unbekanntes fällt weg. Präparierte Daten können keinen Code
+  ausführen.
 - Eine Content-Security-Policy erlaubt nur eigene Skripte (keine Inline-Skripte, keine Fremdquellen).
-- Der Sync-Token verlässt das Gerät nur über https und nur an die selbst eingetragene Adresse.
-- Hinweis zu GitHub Pages: Alle Seiten unter `<name>.github.io` teilen sich den Browser-Speicher.
-  Wer dort weitere Projekte betreibt, sollte für die App eine eigene (Sub-)Domain verwenden.
+- Verbindungen nach außen nur über https. Einladungslinks auf andere Ziele werden abgelehnt.
+- Zugangsdaten (Supabase-URL, Key, Raumcode, Sync-Token) stehen nie im Code, sondern nur im
+  Speicher des Geräts, und sind nicht Teil von Backups.
+
+Befunde, Entscheidungen und bekannte Grenzen stehen in [`SECURITY.md`](SECURITY.md).
 
 ## Technik
 
 ```
 Sprache:      HTML + CSS + Vanilla JS
-Persistenz:   localStorage (JSON)
+Persistenz:   localStorage (JSON), optional gemeinsam über Supabase
 Charts:       reines SVG
 Offline:      Service Worker (cache-first)
 Abhängigkeiten: keine
