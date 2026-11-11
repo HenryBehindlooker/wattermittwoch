@@ -417,6 +417,35 @@ test("F6","Content-Security-Policy aktiv: Inline-Skripte werden blockiert, App l
   eq(await p.evaluate(()=>window.__inline), undefined, "Inline-Skript wurde ausgeführt");
 });
 
+// ════════════════════════════════════════════════════════════════
+// G · Bestehende Daten
+// ════════════════════════════════════════════════════════════════
+// tests/fixtures/store-vorversion.json wurde mit der vorherigen App-Version erspielt
+// (zwei Spieltage, Schneider, vorzeitig beendete und gelöschte Runde, eigene Teams, laufendes Spiel).
+const facts = require("./facts.js");
+const OLD = fs.readFileSync(path.join(__dirname, "fixtures", "store-vorversion.json"), "utf8");
+async function loadOld(p){
+  await p.evaluate(raw=>localStorage.setItem("watten_store_v3", raw), OLD);
+  await p.reload(); await p.waitForTimeout(200);
+}
+test("G1","Spielstand der Vorversion wird beim Laden vollständig und unverändert übernommen", async p=>{
+  await loadOld(p);
+  await newGame(p,{name:"Danach"}); await p.tap("[data-back]");          // löst ein Speichern im neuen Format aus
+  const now=(await store(p)).sessions.filter(s=>s.name!=="Danach");
+  eq(facts({sessions:now}), facts(JSON.parse(OLD)), "Spiele, Spieltage, Runden, Punkte, Teams, laufendes Spiel");
+  eq(await p.evaluate(()=>localStorage.getItem("watten_store_v3_defekt")), null, "nichts wurde als unlesbar beiseitegelegt");
+});
+test("G2","Die Vorversion-Daten sind normal weiter bespielbar, inkl. Rückgängig aus dem alten Verlauf", async p=>{
+  await loadOld(p);
+  await p.tap('[data-sess] >> text=Stammtisch'); await p.waitForTimeout(150);
+  eq([await text(p,".score-col.a .pts"), await text(p,".score-col.b .pts"), await text(p,".score-col.a .tn")], ["6","2","Die Blauen"], "Anzeige");
+  eq([await text(p,".trick-col.a .cnt"), await text(p,".trick-col.b .cnt"), (await text(p,".bid")).trim()], ["2/3","1/3","Gebot: 3"], "laufendes Spiel");
+  await tap(p,"[data-undo]");                                              // letzter Schritt der Vorversion: Stich für B
+  eq(await text(p,".trick-col.b .cnt"), "0/3", "Rückgängig mit altem Verlauf");
+  await tap(p,'[data-trick="0"]');                                         // dritter Stich → Spiel mit Gebot 3 gewonnen
+  eq([await text(p,".score-col.a .pts"), await text(p,".score-col.b .pts")], ["9","2"], "weiterzählen");
+});
+
 // ── Ausführung ──────────────────────────────────────────────────
 (async()=>{
   const only=process.argv.slice(2);
@@ -425,7 +454,7 @@ test("F6","Content-Security-Policy aktiv: Inline-Skripte werden blockiert, App l
   const browser=await chromium.launch();
   const opts={...devices["iPhone 13"], locale:"de-DE", acceptDownloads:true};
   let failed=0, ran=0, group="";
-  const GROUPS={A:"Spiel anlegen",B:"Zählen mit Stichen",C:"Anforderungen aus der Notiz",D:"Runden, Spieltage, Teams",E:"Bedienung",F:"Daten & Sicherheit"};
+  const GROUPS={A:"Spiel anlegen",B:"Zählen mit Stichen",C:"Anforderungen aus der Notiz",D:"Runden, Spieltage, Teams",E:"Bedienung",F:"Daten & Sicherheit",G:"Bestehende Daten"};
   for(const t of tests){
     if(only.length && !only.some(o=>t.id.startsWith(o))) continue;
     if(t.id[0]!==group){ group=t.id[0]; console.log(`\n${group} · ${GROUPS[group]}`); }

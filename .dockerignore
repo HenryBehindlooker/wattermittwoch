@@ -7,3 +7,5 @@ Dockerfile
 tests/
 package.json
 package-lock.json
+supabase.sql
+SECURITY.md

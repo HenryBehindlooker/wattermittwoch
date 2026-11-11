@@ -1,0 +1,34 @@
+# Führt bei jedem Push und Pull Request alle Tests aus.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Datenkern (Unit-Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check core.js && node --check sync.js && node --check app.js && node --check service-worker.js
+      - run: npm test
+
+  browser:
+    name: Browser (Akzeptanz + zwei Geräte)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:acceptance
+      - run: npm run test:e2e
