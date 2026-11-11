@@ -1,0 +1,12 @@
+{
+  "name": "watten-tracker",
+  "private": true,
+  "description": "Watten Tracker – die App selbst hat keine Abhängigkeiten; Playwright wird nur für die Akzeptanztests gebraucht.",
+  "scripts": {
+    "test": "node tests/acceptance.js",
+    "start": "python3 -m http.server 8000"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

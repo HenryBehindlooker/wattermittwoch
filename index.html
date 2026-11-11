@@ -10,6 +10,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Watten">
 <meta name="description" content="Watten Tracker – Kartenspiel-Zähler für Stich, Gebot und Spieltage.">
+<!-- Defense in depth: nur eigene Skripte, keine Inline-Skripte/-Handler, kein Einbetten fremder Inhalte.
+     connect-src erlaubt zusätzlich https (selbst gehosteter Sync-Endpunkt) und localhost zum Testen. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <title>Watten</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -25,6 +29,14 @@
   --sys: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+[hidden]{display:none !important;}
+/* Wie eine native App: kein Textmarkieren/Callout beim langen Drücken – außer in Eingabefeldern */
+body{-webkit-user-select:none; user-select:none; -webkit-touch-callout:none;}
+input{-webkit-user-select:text; user-select:text;}
+body.modal-open{overflow:hidden;}
+:focus-visible{outline:2px solid var(--gold); outline-offset:2px;}
+input:focus-visible{outline:none;}
+@media (prefers-reduced-motion:reduce){ *{transition-duration:.01ms !important; animation-duration:.01ms !important;} }
 html,body{margin:0;padding:0;height:100%;}
 body{
   font-family:var(--sys);
@@ -52,9 +64,9 @@ input{font-family:inherit;}
 .topbar .title{font-size:26px; font-weight:800; color:var(--cream); letter-spacing:-.02em; flex:1; min-width:0;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .topbar.game .title{font-size:17px; font-weight:700; text-align:center;}
-.tb-actions{display:flex; align-items:center; gap:6px;}
-.iconbtn{width:40px; height:40px; border-radius:10px; display:grid; place-items:center;
-  font-size:18px; color:var(--gold);}
+.tb-actions{display:flex; align-items:center; gap:2px;}
+.iconbtn{width:42px; height:44px; border-radius:10px; display:grid; place-items:center;
+  font-size:19px; color:var(--gold);}
 .iconbtn.muted{color:var(--muted);}
 .iconbtn:active{background:rgba(255,255,255,.06);}
 .iconbtn.dim{opacity:.35;}
@@ -67,10 +79,10 @@ input{font-family:inherit;}
 .divider{height:1px; background:var(--border); border:none; margin:0;}
 
 /* ── Home grid ───────────────────────────────────────── */
-.grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; padding-top:6px;}
+.grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding-top:6px;}
 .sess-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--cr);
   padding:14px; min-height:140px; display:flex; flex-direction:column; gap:8px; text-align:left;
-  width:100%; position:relative; transition:transform .08s;}
+  width:100%; min-width:0; position:relative; transition:transform .08s;}
 .sess-card:active{transform:scale(.98);}
 .sc-top{display:flex; align-items:flex-start; gap:6px;}
 .sc-name{font-size:15px; font-weight:700; color:var(--cream); flex:1; min-width:0;
@@ -78,7 +90,12 @@ input{font-family:inherit;}
 .sc-date{font-size:11px; color:var(--muted); white-space:nowrap;}
 .variant-badge{align-self:flex-start; font-size:10px; font-weight:600; color:var(--gold);
   padding:2px 6px; background:rgba(212,168,67,.15); border-radius:4px;}
-.sc-vs{display:flex; align-items:flex-end; gap:6px;}
+/* Teams untereinander: im zweispaltigen Raster passen die Namen sonst nicht nebeneinander */
+.sc-rows{display:flex; flex-direction:column; gap:2px; width:100%;}
+.sc-row{display:flex; align-items:baseline; gap:8px;}
+.sc-row .sc-team{flex:1; min-width:0; font-size:12px;}
+.sc-row .sc-score{font-size:24px;}
+.sc-top{width:100%;}
 .sc-side{display:flex; flex-direction:column; gap:2px; min-width:0; flex:1;}
 .sc-side.r{align-items:flex-end; text-align:right;}
 .sc-team{font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%;}
@@ -131,7 +148,7 @@ input{font-family:inherit;}
 .progress{height:5px; width:calc(100% - 16px); background:var(--border); border-radius:3px; overflow:hidden; margin:2px 0;}
 .progress > span{display:block; height:100%; border-radius:3px;}
 .score-col.a .progress > span{background:var(--teamA);} .score-col.b .progress > span{background:var(--teamB);}
-.score-col .tgt{font-size:10px; color:var(--muted);}
+.score-col .tgt{font-size:10px; color:var(--muted); min-height:22px; display:flex; align-items:center;}
 .rdots{display:flex; flex-wrap:wrap; justify-content:center; gap:4px; margin-top:2px; max-width:100%;}
 .rdots i{width:9px; height:9px; border-radius:50%; background:var(--border); display:block;}
 .score-col.a .rdots i.on{background:var(--teamA);} .score-col.b .rdots i.on{background:var(--teamB);}
@@ -159,6 +176,7 @@ input{font-family:inherit;}
 .bigbtn{flex:1; min-height:var(--tap); border-radius:var(--cr); color:#fff; font-size:16px; font-weight:600;
   display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:0 12px;}
 .bigbtn:active{filter:brightness(.9);}
+.bigbtn.dim{opacity:.4;}
 .bigbtn .ic{font-size:17px;}
 .btn-a{background:var(--teamA);} .btn-b{background:var(--teamB);}
 .btn-gold{background:rgba(212,168,67,.85); color:#fff;}
@@ -169,7 +187,7 @@ input{font-family:inherit;}
 .trick-labels{display:flex; justify-content:space-between; font-size:11px; margin-top:2px;}
 .trick-labels .a{color:var(--teamA);} .trick-labels .b{color:var(--teamB);}
 .gestrichen{font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--bg);
-  background:var(--gold); padding:3px 9px; border-radius:10px; margin-top:2px;}
+  background:var(--gold); padding:3px 9px; border-radius:10px;}
 .quick-worth{text-align:center; font-size:15px; color:var(--muted); margin-top:12px;}
 .quick-worth b{font-family:var(--sysrnd); font-size:28px; color:var(--gold); margin:0 2px;}
 .fold-row{display:flex; gap:10px; margin-top:14px;}
@@ -191,22 +209,27 @@ input{font-family:inherit;}
 
 /* ── Modal / sheet ───────────────────────────────────── */
 .sheet-back{position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:40; opacity:0;
-  transition:opacity .2s; backdrop-filter:blur(2px);}
+  transition:opacity .2s; backdrop-filter:blur(2px); touch-action:none;}
 .sheet-back.open{opacity:1;}
 .sheet{position:fixed; left:0; right:0; bottom:0; z-index:41; max-width:640px; margin:0 auto;
-  background:var(--bg); border-radius:20px 20px 0 0; max-height:94vh; display:flex; flex-direction:column;
+  background:var(--bg); border-radius:20px 20px 0 0; max-height:94vh; max-height:94dvh; display:flex; flex-direction:column;
   transform:translateY(100%); transition:transform .26s cubic-bezier(.32,.72,0,1);
   box-shadow:0 -10px 40px rgba(0,0,0,.5);}
 .sheet.open{transform:translateY(0);}
-.sheet-bar{display:flex; align-items:center; padding:14px 16px calc(10px); gap:12px; flex-shrink:0;}
+/* Navigationsleiste wie in SwiftUI: Titel einzeilig und mittig, Aktionen links/rechts */
+.sheet-bar{display:grid; grid-template-columns:1fr auto 1fr; align-items:center; padding:16px 16px 8px; gap:8px;
+  flex-shrink:0; position:relative; touch-action:none;}
 .sheet-bar .grip{position:absolute; left:50%; top:8px; transform:translateX(-50%);
   width:38px; height:5px; border-radius:3px; background:var(--border);}
-.sheet-title{font-size:17px; font-weight:700; color:var(--cream); flex:1; text-align:center;}
-.sheet-lead,.sheet-trail{min-width:80px; font-size:16px; color:var(--muted);}
-.sheet-trail{text-align:right; color:var(--gold); font-weight:600;}
-.sheet-lead button,.sheet-trail button{font-size:16px;}
-.sheet-body{overflow-y:auto; -webkit-overflow-scrolling:touch; padding:4px 20px calc(24px + var(--sab));}
-.sheet-body.wide{padding:16px 16px calc(24px + var(--sab));}
+.sheet-title{font-size:17px; font-weight:700; color:var(--cream); text-align:center;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:52vw;}
+.sheet-lead,.sheet-trail{min-width:0; font-size:17px; color:var(--muted);}
+.sheet-trail{justify-self:end; text-align:right; color:var(--gold); font-weight:600;}
+.sheet-lead button,.sheet-trail button{font-size:17px; min-height:44px; padding:0 2px; white-space:nowrap;}
+.sheet-trail button{font-weight:600;}
+.sheet-lead button:active,.sheet-trail button:active{opacity:.5;}
+.sheet-body{overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; padding:4px 20px calc(24px + var(--sab));}
+.sheet-body.wide{padding:12px 16px calc(24px + var(--sab));}
 
 .field-lbl{font-size:13px; font-weight:500; color:var(--muted); margin:0 0 8px;}
 .txtfield{width:100%; font-size:17px; color:var(--cream); background:var(--surface);
@@ -232,6 +255,35 @@ input{font-family:inherit;}
 .stepper .ctrls .sepv{width:1px; background:var(--border);}
 .hint{font-size:11px; color:var(--muted); margin-top:8px;}
 
+/* Schalter (SwiftUI Toggle) */
+.toggle-row{display:flex; align-items:center; gap:14px; padding:12px 14px; background:var(--card); border-radius:10px; cursor:pointer;}
+.tr-txt{flex:1; min-width:0; display:flex; flex-direction:column; gap:3px;}
+.tr-title{font-size:17px; font-weight:600; color:var(--cream);}
+.tr-sub{font-size:12px; color:var(--muted); line-height:1.35;}
+.switch{-webkit-appearance:none; appearance:none; width:51px; height:31px; border-radius:16px; background:var(--border);
+  position:relative; flex-shrink:0; margin:0; cursor:pointer; transition:background .2s; outline:none;}
+.switch::after{content:""; position:absolute; top:2px; left:2px; width:27px; height:27px; border-radius:50%;
+  background:#fff; box-shadow:0 2px 5px rgba(0,0,0,.35); transition:transform .2s;}
+.switch:checked{background:var(--gold);}
+.switch:checked::after{transform:translateX(20px);}
+.switch:focus-visible{box-shadow:0 0 0 2px var(--gold);}
+
+/* Gruppierte Liste (SwiftUI Form / List) */
+.group{background:var(--card); border:1px solid var(--border); border-radius:var(--cr); overflow:hidden;}
+.group .row{width:100%; min-height:50px; display:flex; align-items:center; gap:12px; padding:0 14px;
+  text-align:left; font-size:16px; color:var(--cream);}
+.group .row + .row{border-top:1px solid rgba(61,92,61,.55);}
+.group button.row:active{background:rgba(255,255,255,.06);}
+.row-ic{width:22px; display:grid; place-items:center; color:var(--gold); font-size:18px; flex-shrink:0;}
+.row-title{flex:1; min-width:0;}
+.row-chev{color:var(--muted); font-size:14px; opacity:.7; display:grid; place-items:center;}
+.group .row.destructive, .group .row.destructive .row-ic{color:var(--danger);}
+.row-input{flex:1; min-width:0; background:none; border:none; outline:none; color:var(--cream); font-size:16px; padding:14px 0;}
+.row-input::placeholder{color:var(--muted);}
+.destructive-row{width:100%; min-height:50px; background:var(--card); border-radius:10px; color:var(--danger);
+  font-size:17px; display:flex; align-items:center; justify-content:center; gap:8px;}
+.destructive-row:active{background:rgba(196,75,75,.15);}
+
 .name-row{display:flex; align-items:center; gap:10px; margin-bottom:10px;}
 .name-row .num{font-size:15px; color:var(--muted); width:20px;}
 .name-row input{flex:1; font-size:17px; font-weight:500; color:var(--cream); background:var(--card);
@@ -252,7 +304,7 @@ input{font-family:inherit;}
 .player-row .swap{width:44px; height:44px; display:grid; place-items:center; color:var(--muted); font-size:16px;}
 .player-row.a .pi{color:var(--teamA);} .player-row.b .pi{color:var(--teamB);}
 .names2{display:flex; gap:10px;}
-.names2 input{flex:1; font-size:15px; font-weight:500; color:var(--cream); background:var(--surface);
+.names2 input{flex:1; font-size:16px; font-weight:500; color:var(--cream); background:var(--surface);
   border-radius:10px; padding:12px; outline:none; min-width:0;}
 .names2 input.a{border:1.5px solid rgba(74,144,217,.5);}
 .names2 input.b{border:1.5px solid rgba(217,107,74,.5);}
@@ -260,8 +312,8 @@ input{font-family:inherit;}
   font-size:16px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px; margin-top:20px;}
 
 /* segmented */
-.seg{display:flex; background:var(--card); border-radius:9px; padding:2px; margin:16px;}
-.seg button{flex:1; padding:7px 0; font-size:13px; font-weight:600; color:var(--muted); border-radius:7px;}
+.seg{display:flex; background:var(--card); border-radius:9px; padding:2px; margin:4px 0 16px;}
+.seg button{flex:1; padding:8px 0; font-size:13px; font-weight:600; color:var(--muted); border-radius:7px;}
 .seg button.on{background:var(--surface); color:var(--cream);}
 
 /* history */
@@ -273,7 +325,7 @@ input{font-family:inherit;}
 .md-head .mdt{font-size:12px; color:var(--muted);}
 .del-badge{display:inline-flex; align-items:center; gap:6px; font-size:11px; color:rgba(196,75,75,.8);
   padding:4px 10px; background:var(--deleted); border-radius:6px;}
-.trash-btn{width:30px;height:30px;display:grid;place-items:center;color:rgba(196,75,75,.7);font-size:14px;}
+.trash-btn{width:40px;height:36px;margin:-4px -6px -4px 0;display:grid;place-items:center;color:rgba(196,75,75,.8);font-size:15px;flex-shrink:0;}
 .md-score{display:flex; align-items:flex-end; margin-bottom:4px;}
 .md-score .s{flex:1; display:flex; flex-direction:column; gap:2px;}
 .md-score .s.r{align-items:flex-end;}
@@ -330,11 +382,13 @@ input{font-family:inherit;}
 .empty-mini .big{font-size:44px; color:var(--border);}
 
 /* toast */
-.toast{position:fixed; left:50%; bottom:calc(30px + var(--sab)); transform:translateX(-50%) translateY(20px);
+.toast{position:fixed; left:50%; top:calc(10px + var(--sat)); transform:translateX(-50%) translateY(-20px);
   background:var(--surface); color:var(--cream); border:1px solid var(--border); padding:12px 20px;
   border-radius:12px; font-size:14px; z-index:60; opacity:0; transition:all .25s; pointer-events:none;
-  box-shadow:0 8px 24px rgba(0,0,0,.4); max-width:88%; text-align:center;}
+  box-shadow:0 8px 24px rgba(0,0,0,.4); width:max-content; max-width:88%; text-align:center; font-weight:500;}
 .toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
+/* Solange ein Sheet/Dialog offen ist, unten anzeigen – oben läge sie über „Abbrechen/Fertig“ */
+body.modal-open .toast{top:auto; bottom:calc(30px + var(--sab));}
 
 /* generic alert dialog */
 .alert-back{position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:50; display:grid; place-items:center;
@@ -346,22 +400,19 @@ input{font-family:inherit;}
 .alert .at{padding:20px 18px 6px; font-size:17px; font-weight:700; text-align:center; color:var(--cream);}
 .alert .am{padding:0 18px 16px; font-size:13px; text-align:center; color:var(--muted); line-height:1.4;}
 .alert .ab{display:flex; border-top:1px solid var(--border);}
-.alert .ab button{flex:1; padding:14px; font-size:16px; color:var(--gold); font-weight:500;}
-.alert .ab button.destructive{color:var(--danger); font-weight:700;}
+.alert .ab button{flex:1; padding:13px 10px; min-height:46px; font-size:17px; color:var(--gold); font-weight:400;}
+.alert .ab button.cancel{font-weight:600;}
+.alert .ab button.destructive{color:var(--danger);}
+.alert .ab button:active{background:rgba(255,255,255,.06);}
 .alert .ab button + button{border-left:1px solid var(--border);}
 
-@media (min-width:560px){ .grid{grid-template-columns:1fr 1fr 1fr;} }
+@media (min-width:560px){ .grid{grid-template-columns:repeat(3,minmax(0,1fr));} }
 </style>
 </head>
 <body>
 <div class="app" id="app"></div>
 <div id="modal-root"></div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
-<script>
-if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js').catch(()=>{}));
-}
-</script>
 </body>
 </html>
