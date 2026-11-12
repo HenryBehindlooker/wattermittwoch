@@ -2,10 +2,11 @@
  * Cache-first für die App-Shell → funktioniert vollständig offline.
  * Bei jedem Release CACHE hochzählen, damit Clients das Update ziehen.
  */
-const CACHE = "watten-v7";
+const CACHE = "watten-v8";
 const ASSETS = [
   "./",
   "./index.html",
+  "./skin.js",
   "./core.js",
   "./sync.js",
   "./app.js",
@@ -15,6 +16,11 @@ const ASSETS = [
   "./icons/icon-1024.png",
   "./icons/apple-touch-icon.png",
   "./icons/favicon-32.png",
+  "./fonts/caveat-brush.woff2",
+  "./fonts/bebas-neue.woff2",
+  "./fonts/dseg7-classic-bold.woff2",
+  "./fonts/playfair-display-700.woff2",
+  "./fonts/courier-prime-700.woff2",
 ];
 
 self.addEventListener("install", (e) => {

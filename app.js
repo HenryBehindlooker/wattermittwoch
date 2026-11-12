@@ -8,8 +8,8 @@
 // Design-Tokens (nur für JS-Zugriff; Farben leben im CSS)
 // ─────────────────────────────────────────────────────────────
 const COL = {
-  teamA:"#4A90D9", teamB:"#D96B4A", gold:"#D4A843",
-  border:"#3D5C3D", green2:"#5FAF5F"
+  teamA:"var(--teamA)", teamB:"var(--teamB)", gold:"var(--gold)", border:"var(--border)",
+  danger:"var(--danger)", muted:"var(--muted)", chart4:"var(--chart4)", neutral:"var(--btn-neutral)",
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ const IC = {
   crown:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M3 7l4 4 5-6 5 6 4-4v11H3V7z"/></svg>',
   flame:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M12 2s5 4 5 9a5 5 0 0 1-10 0c0-1.5.5-2.5 1-3 0 1 .5 2 1.5 2 .8 0 1-.7 1-1.5C10.5 8 12 5 12 2z"/></svg>',
   trash:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zM6 8h12l-1 13H7L6 8z"/></svg>',
-  dice:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.4" fill="#1A2B1A"/><circle cx="15" cy="15" r="1.4" fill="#1A2B1A"/><circle cx="15" cy="9" r="1.4" fill="#1A2B1A"/><circle cx="9" cy="15" r="1.4" fill="#1A2B1A"/></svg>',
+  dice:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.4" fill="var(--gold)"/><circle cx="15" cy="15" r="1.4" fill="var(--gold)"/><circle cx="15" cy="9" r="1.4" fill="var(--gold)"/><circle cx="9" cy="15" r="1.4" fill="var(--gold)"/></svg>',
   person:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-6 8-6s8 2 8 6v1H4z"/></svg>',
   swap:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 4l4 4-4 4"/><path d="M21 8H3"/><path d="M7 20l-4-4 4-4"/><path d="M3 16h18"/></svg>',
   info:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r="1" fill="currentColor" stroke="none"/></svg>',
@@ -48,6 +48,7 @@ const IC = {
   table:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>',
   shield:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></svg>',
   chevron:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  palette:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 0 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="10.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="7.5" r="1.2" fill="currentColor" stroke="none"/></svg>',
   cloud:'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-1-7.9A5 5 0 0 1 15.9 8 4.5 4.5 0 0 1 17 18H7z"/></svg>',
 };
 
@@ -451,12 +452,14 @@ function renderHome(){
     <div class="topbar">
       <div class="title">Watten</div>
       <div class="tb-actions">
+        <button class="iconbtn muted" data-act="skin" aria-label="Darstellung">${IC.palette}</button>
         <button class="iconbtn muted" data-act="data" aria-label="Daten & Backup">${IC.archive}</button>
         <button class="iconbtn" data-act="new" aria-label="Neues Spiel">${IC.plusCircle}</button>
       </div>
     </div>${body}`;
   app.querySelectorAll('[data-act="new"]').forEach(b=>b.onclick=openNewGame);
   app.querySelectorAll('[data-act="data"]').forEach(b=>b.onclick=openDataSheet);
+  app.querySelectorAll('[data-act="skin"]').forEach(b=>b.onclick=openSkinSheet);
   let longPressed=false;
   app.querySelectorAll('[data-sess]').forEach(c=>{
     c.onclick=(e)=>{
@@ -785,6 +788,65 @@ function openSheet(kind,s){
   if(kind==="undo")     return openUndo(s);
 }
 
+// ── Darstellung (Skins) ──
+// Farben stecken komplett in CSS-Tokens (index.html); skin.js setzt den Skin vor dem
+// ersten Zeichnen. Die Kacheln tragen selbst data-skin und zeigen sich so in ihren Farben.
+const SKIN_INFO = {
+  filz:     ["Filz",      "Grüner Spieltisch – wie bisher"],
+  nacht:    ["Nacht",     "Schwarz wie iOS im Dunkelmodus"],
+  hell:     ["Hell",      "Weiß und Grau wie iOS im Hellmodus"],
+  zirbe:    ["Zirbe",     "Helles Holz, wie eine Tiroler Stube"],
+  wirtshaus:["Wirtshaus", "Dunkles Holz und warmes Licht"],
+  kontrast: ["Kontrast",  "Maximale Lesbarkeit"],
+};
+// Mini-Spielstand für die Vorschau; die Farben kommen vom umgebenden data-skin
+const SKIN_MINI=`<span class="sp-card"><b class="a">12</b><i>:</i><b class="b">7</b></span>
+    <span class="sp-row"><span class="sp-pill">Gebot 3</span><span class="sp-btn a"></span><span class="sp-btn b"></span></span>`;
+function skinOptions(){
+  const cur=window.Skin ? Skin.get() : "filz";
+  const opt=(key,name,desc,prev,wide)=>`<button type="button" class="skin-opt ${wide?'wide':''} ${cur===key?'sel':''}" data-pick="${key}" role="radio" aria-checked="${cur===key}">
+      <span class="skin-frame">${prev}</span>
+      <span class="skin-name">${esc(name)}${cur===key?`<span class="ok">${IC.check}</span>`:''}</span>
+      <span class="skin-desc">${esc(desc)}</span>
+    </button>`;
+  const auto=opt("auto","Automatisch","Filz bei dunkler, Hell bei heller Einstellung des Geräts",
+    `<span class="skin-prev split"><span data-skin="filz">${SKIN_MINI}</span><span data-skin="hell">${SKIN_MINI}</span></span>`, true);
+  return auto + Object.entries(SKIN_INFO).map(([k,[n,d]])=>
+    opt(k,n,d,`<span class="skin-prev" data-skin="${k}">${SKIN_MINI}</span>`)).join("");
+}
+const FONT_INFO = {
+  system:"Standard", kreide:"Kreide", tafel:"Anzeigetafel", digital:"Digital", klassisch:"Klassisch", schreibmaschine:"Schreibmaschine",
+};
+function fontOptions(){
+  const cur=window.Skin ? Skin.getFont() : "system";
+  return Object.entries(FONT_INFO).map(([k,n])=>`<button type="button" class="font-opt ${cur===k?'sel':''}" data-font="${k}" role="radio" aria-checked="${cur===k}">
+      <span class="skin-frame"><span class="font-prev" ${k==="system"?'':`data-numfont="${k}"`}><b class="a">12</b><i>:</i><b class="b">7</b></span></span>
+      <span class="skin-name">${esc(n)}${cur===k?`<span class="ok">${IC.check}</span>`:''}</span>
+    </button>`).join("");
+}
+function openSkinSheet(){
+  if(!window.Skin) return;
+  const body=`<div class="section"><p class="field-lbl">Farben</p>
+      <div class="skin-grid" id="sk-grid" role="radiogroup" aria-label="Farbschema">${skinOptions()}</div></div>
+    <div class="section"><p class="field-lbl">Zahlen</p>
+      <div class="font-grid" id="ft-grid" role="radiogroup" aria-label="Schrift der Zahlen">${fontOptions()}</div>
+      <p class="hint">Gilt nur für dieses Gerät. Spielstände und gemeinsame Liste bleiben unberührt.</p></div>`;
+  const {el,close}=sheetShell({ title:"Darstellung", trail:`<button id="sk-done">Fertig</button>`, body });
+  const grid=$('#sk-grid',el);
+  const wire=()=>grid.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{
+    Skin.set(b.dataset.pick); Haptics.light();
+    grid.innerHTML=skinOptions(); wire();
+  });
+  wire();
+  const fgrid=$('#ft-grid',el);
+  const wireF=()=>fgrid.querySelectorAll('[data-font]').forEach(b=>b.onclick=()=>{
+    Skin.setFont(b.dataset.font); Haptics.light();
+    fgrid.innerHTML=fontOptions(); wireF();
+  });
+  wireF();
+  $('#sk-done',el).onclick=close;
+}
+
 // ── Formular-Bausteine ──
 function variantOptsHtml(variant){
   return VARIANT_ORDER.map(k=>{
@@ -961,15 +1023,16 @@ function openUndo(s){
   const undoIcon={addTrick:IC.hand,increaseBid:IC.arrowUp,nextRound:IC.arrowRight,
     nextMatchday:IC.flag,teamChange:IC.shuffle,deleteRound:IC.trash,deleteMatchday:IC.trash,other:IC.pencil,
     winHand:IC.plus,fold:IC.flag};
-  const undoColor={addTrick:COL.teamA,increaseBid:COL.gold,nextRound:COL.border,
-    nextMatchday:"#C44B4B",teamChange:"#8A9E8A",deleteRound:"#C44B4B",deleteMatchday:"#C44B4B",other:"#8A9E8A",
+  const undoColor={addTrick:COL.teamA,increaseBid:COL.gold,nextRound:COL.neutral,
+    nextMatchday:COL.danger,teamChange:COL.muted,deleteRound:COL.danger,deleteMatchday:COL.danger,other:COL.muted,
     winHand:COL.teamA,fold:COL.gold};
+  const undoInk=(a)=> a==="nextRound" ? "var(--on-neutral)" : "var(--on-team)";
   const hist=Game.undoHistory(s);
   const body = hist.length===0
     ? `<div class="empty-mini"><span class="big">${IC.clock}</span><span>Keine Aktionen</span></div>`
     : `<div style="padding-top:8px">${hist.map((snap,idx)=>`
         <div class="undo-item">
-          <span class="ci" style="background:${undoColor[snap.action]||undoColor.other}">${undoIcon[snap.action]||undoIcon.other}</span>
+          <span class="ci" style="background:${undoColor[snap.action]||undoColor.other};color:${undoInk(snap.action)}">${undoIcon[snap.action]||undoIcon.other}</span>
           <div class="ut"><div class="u1">${esc(UNDO_LABEL[snap.action]||UNDO_LABEL.other)}</div><div class="u2">${fmt.timeMedium(snap.timestamp)}</div></div>
           ${idx===0?'<span class="now">Aktuell</span>':''}
         </div>`).join("")}</div>`;
@@ -1017,7 +1080,7 @@ function matchdayCard(s,idx,md){
   if(!md.isDeleted){
     rounds=md.rounds.map((r,rIdx)=>{
       if(r.isDeleted){
-        return `<div class="round-row del"><span style="color:rgba(196,75,75,.6)">${IC.trash}</span>
+        return `<div class="round-row del"><span style="color:color-mix(in srgb, var(--danger) 60%, transparent)">${IC.trash}</span>
           <span class="rl strike">Runde ${rIdx+1} – gelöscht</span></div>`;
       }
       const dur = r.endedAt!=null ? `<div class="rt">${Math.floor((r.endedAt-r.startedAt)/60000)}m ${Math.floor((r.endedAt-r.startedAt)/1000)%60}s</div>`:'';
@@ -1087,7 +1150,7 @@ function statsSummary(s){
           : md.teamBRoundsWon>md.teamARoundsWon?`<span style="color:var(--teamB)">${IC.crown}</span>`:`<span style="color:var(--muted)">${IC.equal}</span>`;
         return `<div class="row-line" style="opacity:${md.isDeleted?.5:1}">
           <span class="rt" style="flex:none;color:var(--muted)">Tag ${idx+1}</span>
-          ${md.isDeleted?`<span style="color:rgba(196,75,75,.6)">${IC.trash}</span>`:''}
+          ${md.isDeleted?`<span style="color:color-mix(in srgb, var(--danger) 60%, transparent)">${IC.trash}</span>`:''}
           <span style="flex:1"></span>
           <span style="font-weight:700;color:${md.isDeleted?'var(--muted)':'var(--teamA)'}">${md.teamARoundsWon}</span>
           <span class="col" style="color:var(--muted)">:</span>
@@ -1153,7 +1216,7 @@ function lineChart(s){
 function donutChart(s){
   const stats=Game.playerStats(s).slice().sort((a,b)=>b.roundsWon-a.roundsWon);
   const total=Math.max(1,stats.reduce((a,x)=>a+x.roundsWon,0));
-  const palette=[COL.teamA,COL.teamB,COL.gold,COL.green2];
+  const palette=[COL.teamA,COL.teamB,COL.gold,COL.chart4];
   const R=60,rO=54,rI=54*0.62,cx=60,cy=60;
   const polar=(r,a)=>[cx+r*Math.cos(a), cy+r*Math.sin(a)];
   const slice=(a0,a1,col)=>{
@@ -1177,7 +1240,7 @@ function donutChart(s){
       <div style="position:relative;width:120px;height:120px;flex-shrink:0">
         <svg viewBox="0 0 120 120" width="120" height="120">${arcs}</svg>
         <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
-          <div style="font-size:22px;font-weight:800;color:var(--cream)">${realTotal}</div>
+          <div style="font-family:var(--numfont);font-variant-numeric:var(--numvariant);font-size:22px;font-weight:800;color:var(--cream)">${realTotal}</div>
           <div style="font-size:10px;color:var(--muted)">Runden</div></div>
       </div>
       <div class="donut-legend">${legendRows}</div>
